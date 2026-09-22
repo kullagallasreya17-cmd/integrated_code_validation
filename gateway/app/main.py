@@ -20,7 +20,9 @@ def health():
 
 
 app.include_router(projects.router)
+app.include_router(projects.api_router)
 app.include_router(analysis.router)
+app.include_router(analysis.api_router)
 app.include_router(results.router)
 
 

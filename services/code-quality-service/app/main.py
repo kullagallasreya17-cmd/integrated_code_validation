@@ -1,3 +1,5 @@
+from time import perf_counter
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -43,6 +45,17 @@ def _quality_summary(files: dict[str, str], findings: list) -> dict:
         "by_tool": by_tool,
         "by_severity": by_severity,
     }
+
+
+def _quality_score(summary: dict) -> int:
+    """Return a transparent score for comparing runs, not a pass/fail verdict."""
+    deductions = (
+        summary["errors"] * 12
+        + summary["warnings"] * 5
+        + summary["info"] * 1
+        + summary["complex_functions"] * 4
+    )
+    return max(0, 100 - deductions)
 
 
 @app.get("/health")
@@ -95,14 +108,23 @@ def analyze(request: AnalyzeRequest):
 
     raw_issues: list[dict] = []
     tool_errors: list[str] = []
+    tool_runs: list[dict] = []
     analyzers = {
         "ruff": run_ruff,
         "pylint": run_pylint,
         "radon": run_radon,
     }
     for tool in tools:
+        started = perf_counter()
         try:
-            raw_issues += analyzers[tool](files)
+            tool_issues = analyzers[tool](files)
+            raw_issues += tool_issues
+            tool_runs.append({
+                "tool": tool,
+                "status": "completed",
+                "finding_count": len(tool_issues),
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+            })
         except Exception as exc:  # noqa: BLE001 - preserve other tool results
             tool_errors.append(f"{tool}: {exc}")
             raw_issues.append(
@@ -115,8 +137,19 @@ def analyze(request: AnalyzeRequest):
                     "severity_hint": "low",
                 }
             )
+            tool_runs.append({
+                "tool": tool,
+                "status": "failed",
+                "finding_count": 1,
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+                "error": str(exc),
+            })
 
     findings = normalize(raw_issues)
+    quality_summary = _quality_summary(files, findings)
+    quality_summary["quality_score"] = _quality_score(quality_summary)
+    quality_summary["selected_tools"] = tools
+    quality_summary["tool_runs"] = tool_runs
 
     return FindingsResponse(
         project_id=request.project_id,
@@ -124,7 +157,7 @@ def analyze(request: AnalyzeRequest):
         findings=findings,
         findings_count=len(findings),
         error="; ".join(tool_errors) if tool_errors else None,
-        quality_summary=_quality_summary(files, findings),
+        quality_summary=quality_summary,
     )
 
 
