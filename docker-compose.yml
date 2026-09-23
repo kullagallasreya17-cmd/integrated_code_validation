@@ -59,7 +59,7 @@ services:
       args:
         VITE_API_BASE_URL: "${FRONTEND_API_BASE_URL:-http://localhost:8000}"
     ports:
-      - "${FRONTEND_PORT:-5173}:80"
+      - "${FRONTEND_PORT:-5174}:80"
     environment:
       - VITE_API_BASE_URL=${FRONTEND_API_BASE_URL:-http://localhost:8000}
     depends_on:

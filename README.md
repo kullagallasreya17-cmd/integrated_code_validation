@@ -30,7 +30,7 @@ coding-validation-agent/
 docker compose up --build
 ```
 
-- Frontend: http://localhost:5173
+- Frontend: http://localhost:5174
 - Gateway: http://localhost:8000 (docs at /docs)
 - Orchestrator: http://localhost:8001 (internal gateway target)
 - Code quality service: http://localhost:8002 (docs at /docs)
@@ -265,7 +265,7 @@ $env:VITE_API_BASE_URL = "http://localhost:8000"
 npm run dev
 ```
 
-Open `http://localhost:5173`. The currently available services are the
+Open `http://localhost:5174`. The currently available services are the
 frontend, gateway, orchestrator, and code-quality agent. Security, repair,
 sandbox, validation, and bug/resource services remain commented out in
 `docker-compose.yml`; the orchestrator records those unavailable stages as

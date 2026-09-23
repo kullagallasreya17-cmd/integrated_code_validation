@@ -3,6 +3,7 @@ Converts the raw, tool-specific issue dicts from ruff/pylint/radon into
 the shared Finding contract so the Orchestrator can merge them with
 Security and Bug/Resource findings without special-casing this service.
 """
+import re
 from itertools import count
 
 from shared.schemas.finding import Finding, FindingCategory, FindingStatus, Severity
@@ -31,17 +32,28 @@ def _subcategory(code: str | None, source: str | None) -> FindingCategory:
     return FindingCategory.STYLE
 
 
+def _message_signature(message: str | None) -> str:
+    if not message:
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", " ", message.lower()).strip()
+    return " ".join(normalized.split())
+
+
 def normalize(raw_issues: list[dict]) -> list[Finding]:
     """
     raw_issues: output of run_ruff / run_pylint / run_radon, concatenated.
     Returns a list of shared.schemas.finding.Finding, deduplicated by
-    (file, line_number, code).
+    (file, line_number, normalized message) to reduce duplicate reports from
+    multiple quality tools at the same location.
     """
     findings: list[Finding] = []
     seen: set[tuple] = set()
 
     for issue in raw_issues:
-        dedup_key = (issue.get("file"), issue.get("line_number"), issue.get("code"))
+        file_name = issue.get("file") or "unknown"
+        line_number = issue.get("line_number")
+        message_key = _message_signature(issue.get("message"))
+        dedup_key = (file_name, line_number, message_key)
         if dedup_key in seen:
             continue
         seen.add(dedup_key)
@@ -53,14 +65,15 @@ def normalize(raw_issues: list[dict]) -> list[Finding]:
                 finding_id=f"QUAL-{next(_counter):03d}",
                 category=FindingCategory.CODE_QUALITY,
                 severity=_severity(issue.get("severity_hint", "medium")),
-                file=issue.get("file") or "unknown",
-                line_number=issue.get("line_number"),
+                file=file_name,
+                line_number=line_number,
                 issue=code or "unknown_issue",
                 description=issue.get("message") or "",
                 evidence=f"[{source}] {code}",
                 recommendation=_recommendation_for(code),
                 status=FindingStatus.OPEN,
                 tool=source,
+                detected_by_tools=[source] if source else None,
                 subcategory=_subcategory(code, source).value,
             )
         )

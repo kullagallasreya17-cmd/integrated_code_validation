@@ -27,6 +27,9 @@ class WorkflowState(TypedDict, total=False):
     repair_attempts: list[dict]
     agent_errors: list[dict]
     stage_history: list[dict]
+    workflow_trace: list[str]
+    workflow_status: str
+    quality_gate_status: str
 
     # Repair stage
     repair_attempt: int

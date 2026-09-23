@@ -46,6 +46,7 @@ class Finding(BaseModel):
     recommendation: Optional[str] = None
     status: FindingStatus = FindingStatus.OPEN
     tool: Optional[str] = None
+    detected_by_tools: Optional[list[str]] = None
     subcategory: Optional[str] = None
 
     class Config:
