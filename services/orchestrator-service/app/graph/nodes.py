@@ -29,7 +29,6 @@ async def understand_project(state: WorkflowState) -> dict:
     add real project-understanding (dependency graph, language detection)
     without touching the analysis fan-out logic."""
     files = state.get("project_files", {})
-    files = state.get("project_files", {})
     structure = inspect_python_files(files)
     stage = {"stage": "understand", "status": "completed", "file_count": len(files)}
     return {
@@ -40,6 +39,7 @@ async def understand_project(state: WorkflowState) -> dict:
         "analysis_id": state.get("analysis_id") or state.get("project_id"),
         "agent_errors": [],
         "stage_history": [stage],
+        "workflow_trace": ["Workflow started", "Project understanding completed"],
         "error": None if files else "No project files supplied",
     }
 
@@ -79,8 +79,13 @@ async def analyze(state: WorkflowState) -> dict:
         "security_findings": security_res.get("findings", []),
         "quality_findings": quality_res.get("findings", []),
         "quality_summary": quality_res.get("quality_summary", {}),
+        "quality_gate_status": (
+            quality_res.get("quality_summary", {}).get("quality_gate_status")
+            or quality_res.get("quality_summary", {}).get("quality_gate", {}).get("status", "UNKNOWN")
+        ),
         "resource_findings": resource_res.get("findings", []),
         "agent_errors": agent_errors,
+        "workflow_trace": [*state.get("workflow_trace", []), "Analysis agents completed"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "analyze",
             "status": "completed" if not agent_errors else "partial",
@@ -97,6 +102,7 @@ async def aggregate_findings(state: WorkflowState) -> dict:
     )
     return {
         "findings": findings,
+        "workflow_trace": [*state.get("workflow_trace", []), "Findings aggregated"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "aggregate", "status": "completed", "finding_count": len(findings)
         }],
@@ -111,6 +117,7 @@ async def explain_and_prioritize(state: WorkflowState) -> dict:
         findings,
         key=lambda finding: (
             severity_rank.get(finding.get("severity", "medium"), 2),
+            0 if state.get("quality_gate_status") == "FAIL" and finding.get("category") == "code_quality" else 1,
             finding.get("file", ""),
             finding.get("line_number") or 0,
         ),
@@ -127,6 +134,7 @@ async def explain_and_prioritize(state: WorkflowState) -> dict:
     return {
         "prioritized_findings": prioritized,
         "explanations": explanations,
+        "workflow_trace": [*state.get("workflow_trace", []), "Findings prioritized"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "explain_prioritize", "status": "completed", "finding_count": len(prioritized)
         }],
@@ -164,6 +172,7 @@ async def repair(state: WorkflowState) -> dict:
         "repair_attempt": attempt,
         "repair_attempts": [*state.get("repair_attempts", []), attempt_record],
         "agent_errors": agent_errors,
+        "workflow_trace": [*state.get("workflow_trace", []), f"Repair iteration {attempt} requested"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "repair", "status": "partial" if repair_error else "completed",
             "attempt": attempt,
@@ -191,6 +200,7 @@ async def validate(state: WorkflowState) -> dict:
             "validation_results": {"passed": False, "error": error},
             "validation_status": "failed",
             "agent_errors": agent_errors,
+            "workflow_trace": [*state.get("workflow_trace", []), "Sandbox validation failed"],
             "stage_history": [*state.get("stage_history", []), {
                 "stage": "validate", "status": "failed", "sandbox": "failed"
             }],
@@ -210,6 +220,7 @@ async def validate(state: WorkflowState) -> dict:
         "validation_results": result,
         "validation_status": "passed" if passed else "failed",
         "agent_errors": agent_errors,
+        "workflow_trace": [*state.get("workflow_trace", []), "Validation completed"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "validate", "status": "passed" if passed else "failed"
         }],
@@ -238,6 +249,7 @@ async def reanalyze(state: WorkflowState) -> dict:
         "reanalysis_findings": findings,
         "reanalysis_summary": summary,
         "agent_errors": agent_errors,
+        "workflow_trace": [*state.get("workflow_trace", []), "Re-analysis completed"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "reanalyze", "status": "partial" if error else "completed",
             "finding_count": len(findings),
@@ -263,6 +275,17 @@ async def compare_results(state: WorkflowState) -> dict:
     }
     return {
         "comparison": comparison,
+        "repair_attempts": [
+            *state.get("repair_attempts", [])[:-1],
+            {
+                **state.get("repair_attempts", [])[-1],
+                "findings_before": len(state.get("findings", [])),
+                "findings_after": len(state.get("reanalysis_findings", [])),
+                "quality_improved": comparison["improved"],
+                "final_outcome": "improved" if comparison["improved"] else "needs_review",
+            },
+        ] if state.get("repair_attempts") else [],
+        "workflow_trace": [*state.get("workflow_trace", []), "Before and after results compared"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "compare", "status": "completed", "improved": comparison["improved"]
         }],
@@ -279,6 +302,7 @@ async def finalize(state: WorkflowState) -> dict:
     findings = state.get("findings", [])
     return {
         "final_code": state.get("repaired_code") or state.get("project_files", {}),
+        "workflow_trace": [*state.get("workflow_trace", []), "Workflow report finalized"],
         "final_report": build_report(state),
         "stage_history": [*state.get("stage_history", []), {
             "stage": "finalize", "status": "completed"

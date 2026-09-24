@@ -144,3 +144,26 @@ def test_analyze_exposes_quality_gate_and_hotspots(monkeypatch):
     assert "per_file" in summary
     assert "tool_results" in summary
     assert summary["tool_results"]["ruff"]["status"] == "completed"
+
+
+def test_analyze_deduplicates_cross_tool_unused_variable(monkeypatch):
+    from app import main
+
+    issue = {
+        "file": "app.py",
+        "line_number": 3,
+        "message": "unused variable 'value'",
+        "severity_hint": "medium",
+    }
+    monkeypatch.setattr(main, "run_ruff", lambda files: [{**issue, "source": "ruff", "code": "F841"}])
+    monkeypatch.setattr(main, "run_pylint", lambda files: [{**issue, "source": "pylint", "code": "W0612"}])
+
+    response = client.post("/analyze", json={
+        "project_id": "dedup-test",
+        "files": [{"path": "app.py", "content": "def run():\n    value = 1\n"}],
+        "tools": ["ruff", "pylint"],
+    })
+
+    findings = response.json()["findings"]
+    assert len(findings) == 1
+    assert findings[0]["detected_by_tools"] == ["ruff", "pylint"]

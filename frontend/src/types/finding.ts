@@ -12,6 +12,7 @@ export interface Finding {
   recommendation?: string;
   status: "open" | "repaired" | "ignored";
   tool?: string;
+  detected_by_tools?: string[];
   subcategory?: string;
 }
 
@@ -39,6 +40,8 @@ export interface FinalReport {
   final_code?: Record<string, string>;
   quality_summary?: QualitySummary;
   reanalysis_summary?: QualitySummary;
+  workflow_summary?: WorkflowSummary;
+  workflow_trace?: string[];
   comparison?: {
     findings_before: number;
     findings_after: number;
@@ -58,6 +61,28 @@ export interface QualitySummary {
   complex_functions: number;
   by_tool: Record<string, number>;
   by_severity: Record<string, number>;
+  quality_score?: number;
+  quality_gate_status?: "PASS" | "FAIL" | string;
+  quality_gate?: {
+    status: "PASS" | "FAIL" | string;
+    overall_score: number;
+    thresholds: Record<string, number>;
+  };
+  tool_runs?: Array<{ tool: string; status: string; finding_count: number; duration_ms?: number; error?: string }>;
+  hotspots?: Array<{ function_name: string; file: string | null; line: number | null; complexity: number; risk_level: string }>;
+  per_file?: Record<string, { errors: number; warnings: number; complexity: string; issues: number }>;
+}
+
+export interface WorkflowSummary {
+  workflow_status: string;
+  total_findings: number;
+  findings_by_severity: Record<string, number>;
+  quality_score: number;
+  quality_gate: string;
+  repair_attempts: Array<Record<string, unknown>>;
+  validation_result: Record<string, unknown>;
+  agent_failures: Array<{ agent: string; error: string }>;
+  workflow_duration_seconds?: number;
 }
 
 export interface WorkflowRunResponse {

@@ -47,21 +47,29 @@ def normalize(raw_issues: list[dict]) -> list[Finding]:
     multiple quality tools at the same location.
     """
     findings: list[Finding] = []
-    seen: set[tuple] = set()
+    finding_by_key: dict[tuple, Finding] = {}
 
     for issue in raw_issues:
         file_name = issue.get("file") or "unknown"
         line_number = issue.get("line_number")
-        message_key = _message_signature(issue.get("message"))
-        dedup_key = (file_name, line_number, message_key)
-        if dedup_key in seen:
-            continue
-        seen.add(dedup_key)
-
         code = issue.get("code")
         source = issue.get("source")
-        findings.append(
-            Finding(
+        message_key = _message_signature(issue.get("message"))
+        if code in {"F841", "W0612"} or "unused variable" in message_key:
+            dedup_key = (file_name, line_number, "unused variable")
+        else:
+            dedup_key = (file_name, line_number, message_key)
+
+        existing = finding_by_key.get(dedup_key)
+        if existing is not None:
+            detected_by_tools = list(existing.detected_by_tools or [])
+            if source and source not in detected_by_tools:
+                detected_by_tools.append(source)
+            existing.detected_by_tools = detected_by_tools
+            existing.evidence = f"{existing.evidence}; [{source}] {code}"
+            continue
+
+        finding = Finding(
                 finding_id=f"QUAL-{next(_counter):03d}",
                 category=FindingCategory.CODE_QUALITY,
                 severity=_severity(issue.get("severity_hint", "medium")),
@@ -76,7 +84,8 @@ def normalize(raw_issues: list[dict]) -> list[Finding]:
                 detected_by_tools=[source] if source else None,
                 subcategory=_subcategory(code, source).value,
             )
-        )
+        finding_by_key[dedup_key] = finding
+        findings.append(finding)
 
     return findings
 
