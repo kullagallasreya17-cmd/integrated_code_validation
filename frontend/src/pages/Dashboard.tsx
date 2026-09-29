@@ -6,6 +6,7 @@ interface DashboardPageProps {
   onStart: () => void;
   onOpenResults: () => void;
   onOpenHistory: () => void;
+  canStartAnalysis: boolean;
 }
 
 const AGENT_SUMMARY = [
@@ -18,7 +19,7 @@ const AGENT_SUMMARY = [
   ["07", "Report", "Recommendations and traceability", "Planned"],
 ];
 
-export function DashboardPage({ history, latestResult, onStart, onOpenResults, onOpenHistory }: DashboardPageProps) {
+export function DashboardPage({ history, latestResult, onStart, onOpenResults, onOpenHistory, canStartAnalysis }: Readonly<DashboardPageProps>) {
   const findings = latestResult?.findings ?? [];
   const highRisk = findings.filter((finding) => finding.severity === "high" || finding.severity === "critical").length;
   const passed = latestResult?.validation_status === "passed";
@@ -34,7 +35,7 @@ export function DashboardPage({ history, latestResult, onStart, onOpenResults, o
           <h1>Ship code<br /><em>with evidence.</em></h1>
           <p>One controlled workflow for understanding Python projects, reviewing risk, and validating every repair candidate.</p>
         </div>
-        <button className="btn btn--primary dashboard-hero__cta" onClick={onStart}>Start an analysis <span>↗</span></button>
+        {canStartAnalysis && <button className="btn btn--primary dashboard-hero__cta" onClick={onStart}>Start an analysis <span>↗</span></button>}
       </div>
 
       <div className="metric-grid">
@@ -71,7 +72,7 @@ export function DashboardPage({ history, latestResult, onStart, onOpenResults, o
               <button className="btn btn--link" onClick={onOpenResults}>Open report <span>↗</span></button>
             </div>
           ) : (
-            <div className="dashboard-empty"><strong>No analysis yet</strong><span>Your first run will appear here with its decision, evidence, and repair history.</span><button className="btn btn--secondary" onClick={onStart}>Create first run</button></div>
+            <div className="dashboard-empty"><strong>No analysis yet</strong><span>Your first run will appear here with its decision, evidence, and repair history.</span>{canStartAnalysis && <button className="btn btn--secondary" onClick={onStart}>Create first run</button>}</div>
           )}
         </section>
 

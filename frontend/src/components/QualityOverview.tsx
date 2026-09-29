@@ -1,11 +1,18 @@
 import type { Finding, QualitySummary } from "../types/finding";
+import { safeEvidence } from "../analysis/model";
 
 interface QualityOverviewProps {
   summary?: QualitySummary;
   findings: Finding[];
 }
 
-export function QualityOverview({ summary, findings }: QualityOverviewProps) {
+function toolRunSymbol(status: string | undefined): string {
+  if (status === undefined) return "-";
+  if (status === "completed") return "✓";
+  return "!";
+}
+
+export function QualityOverview({ summary, findings }: Readonly<QualityOverviewProps>) {
   const highCount = findings.filter((finding) => finding.severity === "high" || finding.severity === "critical").length;
   const gateStatus = summary?.quality_gate_status ?? summary?.quality_gate?.status;
   const gatePassed = gateStatus === "PASS";
@@ -25,15 +32,14 @@ export function QualityOverview({ summary, findings }: QualityOverviewProps) {
       <div className="quality-overview__tools">
         {tools.map((tool) => {
           const run = summary?.tool_runs?.find((item) => item.tool === tool);
-          const succeeded = run?.status === "completed";
-          return <div key={tool}><span className="quality-tool__status">{run ? (succeeded ? "✓" : "!") : "-"}</span><strong>{tool}</strong><small>{run ? `${run.finding_count} findings` : "not run"}</small></div>;
+          return <div key={tool}><span className="quality-tool__status">{toolRunSymbol(run?.status)}</span><strong>{tool}</strong><small>{run ? `${run.finding_count} findings` : "not run"}</small></div>;
         })}
       </div>
       <div className={`quality-gate quality-gate--${gatePassed ? "passed" : "failed"}`}>
         <div><span className="quality-gate__eyebrow">Quality gate</span><strong>{gateStatus ?? "NOT AVAILABLE"}</strong></div>
         <ul><li>{summary ? `${summary.errors} errors and ${summary.warnings} warnings` : `${highCount} high-risk issues detected`}</li><li>{complexityPassed ? "Complexity within threshold" : "Complexity threshold exceeded"}</li><li>{summary?.quality_gate ? `Minimum score: ${summary.quality_gate.thresholds.minimum_score}` : "Waiting for quality analysis"}</li></ul>
       </div>
-      {summary?.hotspots && summary.hotspots.length > 0 && <div className="quality-overview__hotspots"><span className="quality-gate__eyebrow">Complexity hotspots</span>{summary.hotspots.slice(0, 3).map((hotspot) => <div key={`${hotspot.file}-${hotspot.line}-${hotspot.function_name}`}><strong>{hotspot.function_name}</strong><small>{hotspot.file}:{hotspot.line ?? "-"} · complexity {hotspot.complexity} · {hotspot.risk_level} risk</small></div>)}</div>}
+      {summary?.hotspots && summary.hotspots.length > 0 && <div className="quality-overview__hotspots"><span className="quality-gate__eyebrow">Complexity hotspots</span>{summary.hotspots.slice(0, 3).map((hotspot) => <div key={`${hotspot.file}-${hotspot.line}-${hotspot.function_name}`}><strong>{safeEvidence(hotspot.function_name)}</strong><small>{safeEvidence(hotspot.file ?? "-")}:{hotspot.line ?? "-"} · complexity {hotspot.complexity} · {safeEvidence(hotspot.risk_level)} risk</small></div>)}</div>}
     </section>
   );
 }

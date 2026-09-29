@@ -1,4 +1,5 @@
 export type Severity = "low" | "medium" | "high" | "critical" | "info";
+export type FindingStatus = "Open" | "In repair" | "Fixed (validated)" | "Needs human review" | "False positive" | "Won't fix" | "open" | "repaired" | "ignored";
 
 export interface Finding {
   finding_id: string;
@@ -10,10 +11,11 @@ export interface Finding {
   description: string;
   evidence?: string;
   recommendation?: string;
-  status: "open" | "repaired" | "ignored";
+  status: FindingStatus;
   tool?: string;
   detected_by_tools?: string[];
   subcategory?: string;
+  requires_human_review?: boolean;
 }
 
 export interface ProjectFile {
@@ -62,13 +64,15 @@ export interface QualitySummary {
   by_tool: Record<string, number>;
   by_severity: Record<string, number>;
   quality_score?: number;
-  quality_gate_status?: "PASS" | "FAIL" | string;
+  quality_gate_status?: string;
   quality_gate?: {
-    status: "PASS" | "FAIL" | string;
+    status: string;
     overall_score: number;
     thresholds: Record<string, number>;
   };
-  tool_runs?: Array<{ tool: string; status: string; finding_count: number; duration_ms?: number; error?: string }>;
+  maintainability?: Record<string, unknown>;
+  tool_runs?: Array<{ tool: string; agent?: string; status: string; finding_count: number; duration_ms?: number; exit_code?: number | null; error?: string; raw_output?: string; available?: boolean }>;
+  tool_results?: Record<string, { status?: string; duration_ms?: number; exit_code?: number | null; error?: string; raw_output?: string; available?: boolean; agent?: string; finding_count?: number }>;
   hotspots?: Array<{ function_name: string; file: string | null; line: number | null; complexity: number; risk_level: string }>;
   per_file?: Record<string, { errors: number; warnings: number; complexity: string; issues: number }>;
 }
@@ -86,6 +90,15 @@ export interface WorkflowSummary {
 }
 
 export interface WorkflowRunResponse {
+  run_id?: string;
+  analysis_configuration?: {
+    readonly sandbox_timeout_seconds: number;
+    readonly memory_limit_mb: number;
+    readonly cpu_limit: number;
+    readonly network_policy: "restricted" | "off";
+    readonly llm_provider: string;
+    readonly model_name: string;
+  };
   project_id: string;
   validation_status: ValidationStatus;
   retry_count: number;

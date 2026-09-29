@@ -15,7 +15,7 @@ function buildSteps(activeStepIndex: number): ProgressStep[] {
   });
 }
 
-export function AnalysisPage({ activeStepIndex, progressMessage }: AnalysisPageProps) {
+export function AnalysisPage({ activeStepIndex, progressMessage }: Readonly<AnalysisPageProps>) {
   return (
     <section className="page page--analysis analysis-shell">
       <div className="kicker">Live workflow <span>02 / 04</span></div>

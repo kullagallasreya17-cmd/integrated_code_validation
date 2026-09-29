@@ -15,7 +15,7 @@ const ICON: Record<StepStatus, string> = {
   pending: "\u25CB",
 };
 
-export function AnalysisProgress({ steps }: AnalysisProgressProps) {
+export function AnalysisProgress({ steps }: Readonly<AnalysisProgressProps>) {
   return (
     <ul className="analysis-progress">
       {steps.map((step) => (

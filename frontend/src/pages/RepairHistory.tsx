@@ -1,5 +1,12 @@
 import type { RunHistoryEntry } from "../types/finding";
+import { RequirePermission } from "../components/RequirePermission";
 
-export function RepairHistoryPage({ history, onOpen, onNewAnalysis }: { history: RunHistoryEntry[]; onOpen: (entry: RunHistoryEntry) => void; onNewAnalysis: () => void }) {
-  return <section className="page review-page"><div className="kicker">Repair history <span>03 / 04</span></div><h1>Every run,<br /><em>traceable.</em></h1><p className="review-page__intro">Local history is retained until a persistent report service is connected.</p><div className="history-table">{history.length === 0 ? <div className="empty-state"><strong>No completed runs yet.</strong><span>Start an analysis to create a history record. Completed runs become clickable here.</span><button className="btn btn--primary" onClick={onNewAnalysis}>Start new analysis →</button></div> : history.map((entry) => <button className="history-row" key={`${entry.project_id}-${entry.timestamp}`} onClick={() => onOpen(entry)}><span className="history-row__id">↗</span><span><strong>{entry.project_id}</strong><small>{new Date(entry.timestamp).toLocaleString()} · {entry.originalFiles.length} files</small></span><span className="history-row__issues">{entry.result.findings.length} issues</span><b className={`status-pill status-pill--${entry.validation_status}`}>{entry.validation_status}</b></button>)}</div></section>;
+interface RepairHistoryPageProps {
+  history: RunHistoryEntry[];
+  onOpen: (entry: RunHistoryEntry) => void;
+  onNewAnalysis: () => void;
+}
+
+export function RepairHistoryPage({ history, onOpen, onNewAnalysis }: Readonly<RepairHistoryPageProps>) {
+  return <section className="page review-page"><div className="kicker">Repair history <span>03 / 04</span></div><h1>Every run,<br /><em>traceable.</em></h1><p className="review-page__intro">Local history is retained until a persistent report service is connected.</p><div className="history-table">{history.length === 0 ? <div className="empty-state"><strong>No completed runs yet.</strong><span>Start an analysis to create a history record. Completed runs become clickable here.</span><RequirePermission capability="createAnalysis"><button className="btn btn--primary" onClick={onNewAnalysis}>Start new analysis →</button></RequirePermission></div> : history.map((entry) => <button className="history-row" key={`${entry.project_id}-${entry.timestamp}`} onClick={() => onOpen(entry)}><span className="history-row__id">↗</span><span><strong>{entry.project_id}</strong><small>{new Date(entry.timestamp).toLocaleString()} · {entry.originalFiles.length} files</small></span><span className="history-row__issues">{entry.result.findings.length} issues</span><b className={`status-pill status-pill--${entry.validation_status}`}>{entry.validation_status}</b></button>)}</div></section>;
 }

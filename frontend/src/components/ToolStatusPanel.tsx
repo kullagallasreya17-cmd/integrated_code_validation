@@ -1,4 +1,6 @@
-interface ToolStatusPanelProps { quality: string[]; }
+interface ToolStatusPanelProps {
+  readonly quality: string[];
+}
 
 export function ToolStatusPanel({ quality }: ToolStatusPanelProps) {
   const tools = quality.map((tool) => [tool, "configured"]);

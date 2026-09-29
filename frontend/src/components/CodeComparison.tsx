@@ -6,7 +6,7 @@ interface CodeComparisonProps {
   repaired: ProjectFile[];
 }
 
-export function CodeComparison({ original, repaired }: CodeComparisonProps) {
+export function CodeComparison({ original, repaired }: Readonly<CodeComparisonProps>) {
   const repairedByPath = new Map(repaired.map((f) => [f.path, f.content]));
 
   return (

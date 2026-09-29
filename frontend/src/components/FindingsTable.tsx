@@ -1,5 +1,8 @@
-import { Fragment, useState } from "react";
-import type { Finding, Severity } from "../types/finding";
+import { Fragment, useEffect, useState } from "react";
+import { getFindingStatusHistory, updateFindingStatus, type FindingStatusHistoryEntry } from "../api/findings";
+import { usePermission } from "../auth/permissions";
+import type { Finding, FindingStatus, Severity } from "../types/finding";
+import { safeEvidence } from "../analysis/model";
 
 interface FindingsTableProps {
   findings: Finding[];
@@ -10,14 +13,30 @@ const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium:
 const SEVERITY_FILTERS: Array<"all" | Severity> = ["all", "critical", "high", "medium", "low"];
 const CATEGORY_FILTERS = ["all", "code_quality", "security", "bug", "resource"] as const;
 
-export function FindingsTable({ findings, onSelect }: FindingsTableProps) {
+export function FindingsTable({ findings, onSelect }: Readonly<FindingsTableProps>) {
   const [severity, setSeverity] = useState<"all" | Severity>("all");
   const [category, setCategory] = useState<(typeof CATEGORY_FILTERS)[number]>("all");
   const [tool, setTool] = useState("all");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [currentFindings, setCurrentFindings] = useState(findings);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [reason, setReason] = useState("");
+  const [statusHistory, setStatusHistory] = useState<FindingStatusHistoryEntry[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const [statusError, setStatusError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canChangeStatus = usePermission("changeFindingStatus");
+  const statusOptions: FindingStatus[] = ["Open", "In repair", "Needs human review", "False positive", "Won't fix"];
+  useEffect(() => setCurrentFindings(findings), [findings]);
+  useEffect(() => {
+    if (!expanded) { setStatusHistory([]); setHistoryError(""); return; }
+    const controller = new AbortController();
+    void getFindingStatusHistory(expanded, controller.signal).then((items) => { setStatusHistory(items); setHistoryError(""); }).catch((error: unknown) => { if (!controller.signal.aborted) { setStatusHistory([]); setHistoryError(error instanceof Error ? error.message : "Status history is unavailable."); } });
+    return () => controller.abort();
+  }, [expanded]);
   const query = search.trim().toLowerCase();
-  const sorted = [...findings]
+  const sorted = [...currentFindings]
     .filter((finding) => severity === "all" || finding.severity === severity)
     .filter((finding) => category === "all" || finding.category === category)
     .filter((finding) => tool === "all" || finding.tool === tool)
@@ -30,11 +49,30 @@ export function FindingsTable({ findings, onSelect }: FindingsTableProps) {
     )
     .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 
+  async function changeStatuses(ids: string[], status: FindingStatus) {
+    if (status === "Fixed (validated)") return;
+    setBusy(true);
+    setStatusError("");
+    try {
+      const results = await Promise.all(ids.map((id) => updateFindingStatus(id, status, reason.trim() || undefined)));
+      setCurrentFindings((items) => items.map((item) => ids.includes(item.finding_id) ? { ...item, status } : item));
+      if (expanded && ids.includes(expanded)) {
+        setStatusHistory((items) => [...items, ...results]);
+        setHistoryError("");
+      }
+      setSelected([]);
+      setReason("");
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : "Finding status could not be updated.");
+    } finally { setBusy(false); }
+  }
+
   return (
     <div className="findings-table__container">
       <div className="findings-table__controls">
         <div className="findings-table__filter-groups">
-        <div className="findings-table__filters" role="group" aria-label="Filter by severity">
+        <fieldset className="findings-table__filters">
+          <legend className="visually-hidden">Filter by severity</legend>
           {SEVERITY_FILTERS.map((filter) => (
             <button
               key={filter}
@@ -44,10 +82,11 @@ export function FindingsTable({ findings, onSelect }: FindingsTableProps) {
               {filter[0].toUpperCase() + filter.slice(1)}
             </button>
           ))}
-        </div>
-        <div className="findings-table__filters" role="group" aria-label="Filter by category">
+        </fieldset>
+        <fieldset className="findings-table__filters">
+          <legend className="visually-hidden">Filter by category</legend>
           {CATEGORY_FILTERS.map((filter) => <button key={filter} className={`btn ${category === filter ? "btn--primary" : ""}`} onClick={() => setCategory(filter)}>{filter === "all" ? "All areas" : filter.replace("_", " ")}</button>)}
-        </div>
+        </fieldset>
         <select className="findings-table__tool-select" value={tool} onChange={(event) => setTool(event.target.value)} aria-label="Filter by tool"><option value="all">All tools</option><option value="ruff">Ruff</option><option value="pylint">Pylint</option><option value="radon">Radon</option></select>
         </div>
         <input
@@ -61,9 +100,13 @@ export function FindingsTable({ findings, onSelect }: FindingsTableProps) {
       {sorted.length === 0 ? (
         <p className="findings-table__empty">No findings match these filters.</p>
       ) : (
+        <>
+        <BulkStatusControls visible={canChangeStatus} selectedCount={selected.length} disabled={busy} options={statusOptions} reason={reason} onReasonChange={setReason} onStatusChange={(status) => void changeStatuses(selected, status)} />
+        {statusError && <p role="alert" className="inline-error">{statusError}</p>}
         <table className="findings-table">
           <thead>
             <tr>
+              {canChangeStatus && <th><span className="visually-hidden">Select</span></th>}
               <th>Severity</th>
               <th>File</th>
               <th>Line</th>
@@ -76,28 +119,28 @@ export function FindingsTable({ findings, onSelect }: FindingsTableProps) {
           <tbody>
             {sorted.map((finding) => (
               <Fragment key={finding.finding_id}>
-                <tr
-                  className={`findings-table__row findings-table__row--${finding.severity}`}
-                  onClick={() => { setExpanded(expanded === finding.finding_id ? null : finding.finding_id); onSelect?.(finding); }}
-                >
+                <tr className={`findings-table__row findings-table__row--${finding.severity}`}>
+                  {canChangeStatus && <td><input type="checkbox" aria-label={`Select ${finding.issue}`} checked={selected.includes(finding.finding_id)} onChange={(event) => setSelected((items) => event.target.checked ? [...items, finding.finding_id] : items.filter((id) => id !== finding.finding_id))} /></td>}
                   <td>{finding.severity}</td>
-                  <td>{finding.file}</td>
+                  <td>{safeEvidence(finding.file)}</td>
                   <td>{finding.line_number ?? "-"}</td>
-                  <td>{finding.issue}</td>
+                  <td><button className="btn btn--link" aria-expanded={expanded === finding.finding_id} onClick={() => { setExpanded(expanded === finding.finding_id ? null : finding.finding_id); onSelect?.(finding); }}>{safeEvidence(finding.issue)}</button></td>
                   <td>{finding.subcategory ?? finding.category}</td>
-                  <td>{finding.tool ?? finding.evidence?.match(/^\[([^\]]+)/)?.[1] ?? "-"}</td>
+                  <td>{safeEvidence(finding.tool ?? finding.evidence?.match(/^\[([^\]]+)/)?.[1] ?? "-")}</td>
                   <td><span className="status-pill status-pill--unknown">{finding.status}</span></td>
                 </tr>
                 {expanded === finding.finding_id && (
                   <tr key={`${finding.finding_id}-details`} className="findings-table__details">
-                    <td colSpan={7}>
-                      <strong>Description:</strong> {finding.description}
+                    <td colSpan={canChangeStatus ? 8 : 7}>
+                      <strong>Description:</strong> {safeEvidence(finding.description)}
                       {finding.recommendation && (
                         <p>
-                          <strong>Recommendation:</strong> {finding.recommendation}
+                          <strong>Recommendation:</strong> {safeEvidence(finding.recommendation)}
                         </p>
                       )}
-                      {finding.evidence && <p><strong>Evidence:</strong> {finding.evidence}</p>}
+                      {finding.evidence && <p><strong>Evidence:</strong> {safeEvidence(finding.evidence)}</p>}
+                      {canChangeStatus && <FindingStatusControl finding={finding} disabled={busy} reason={reason} options={statusOptions} onReasonChange={setReason} onStatusChange={(status) => void changeStatuses([finding.finding_id], status)} />}
+                      <section className="finding-status-history"><strong>Status history</strong><StatusHistoryContent entries={statusHistory} error={historyError} /></section>
                     </td>
                   </tr>
                 )}
@@ -105,8 +148,56 @@ export function FindingsTable({ findings, onSelect }: FindingsTableProps) {
             ))}
           </tbody>
         </table>
+        </>
       )}
     </div>
   );
 
+}
+
+interface StatusHistoryContentProps {
+  readonly entries: FindingStatusHistoryEntry[];
+  readonly error: string;
+}
+
+function StatusHistoryContent({ entries, error }: Readonly<StatusHistoryContentProps>) {
+  if (error) return <output>{error}</output>;
+  if (entries.length === 0) return <p>No status changes recorded.</p>;
+  return <ul>{entries.map((entry, index) => <li key={`${entry.changed_at}-${index}`}>{entry.status} · {safeEvidence(entry.changed_by)} · {new Date(entry.changed_at).toLocaleString()}{entry.comment ? ` · ${safeEvidence(entry.comment)}` : ""}</li>)}</ul>;
+}
+
+interface FindingStatusControlProps {
+  readonly finding: Finding;
+  readonly disabled: boolean;
+  readonly reason: string;
+  readonly options: FindingStatus[];
+  readonly onReasonChange: (value: string) => void;
+  readonly onStatusChange: (status: FindingStatus) => void;
+}
+
+function FindingStatusControl({ finding, disabled, reason, options, onReasonChange, onStatusChange }: Readonly<FindingStatusControlProps>) {
+  if (finding.status === "Fixed (validated)" || finding.status === "repaired") return <output>Fixed status is controlled by a passing validation.</output>;
+  return <fieldset className="finding-status-editor"><legend>Finding status</legend><label>Update status<select value={options.includes(finding.status as FindingStatus) ? finding.status : "Open"} disabled={disabled} onChange={(event) => onStatusChange(event.target.value as FindingStatus)}>{options.map((status) => <option key={status}>{status}</option>)}</select></label><label>Optional reason<input value={reason} onChange={(event) => onReasonChange(event.target.value)} /></label><span>Fixed (validated) is assigned only by a passing validation.</span></fieldset>;
+}
+
+interface BulkStatusControlsProps {
+  readonly visible: boolean;
+  readonly selectedCount: number;
+  readonly disabled: boolean;
+  readonly options: FindingStatus[];
+  readonly reason: string;
+  readonly onReasonChange: (value: string) => void;
+  readonly onStatusChange: (status: FindingStatus) => void;
+}
+
+function BulkStatusControls({ visible, selectedCount, disabled, options, reason, onReasonChange, onStatusChange }: Readonly<BulkStatusControlsProps>) {
+  if (!visible) {
+    return null;
+  }
+  function handleStatusChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    const select = event.currentTarget;
+    onStatusChange(select.value as FindingStatus);
+    select.value = "";
+  }
+  return <div className="finding-bulk-controls"><label>Status for selected<select id="bulk-finding-status" defaultValue="" disabled={selectedCount === 0 || disabled} onChange={handleStatusChange}><option value="" disabled>Choose status</option>{options.map((status) => <option key={status}>{status}</option>)}</select></label><label>Optional reason<input value={reason} onChange={(event) => onReasonChange(event.target.value)} /></label><span>{selectedCount} selected</span></div>;
 }
