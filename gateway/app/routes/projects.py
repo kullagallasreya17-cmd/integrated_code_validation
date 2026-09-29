@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, UploadFile
@@ -58,10 +59,10 @@ async def create_api_project(project: ProjectCreate) -> ProjectMeta:
     return _create_project(project)
 
 
-@router.post("/upload", response_model=ProjectMeta)
+@router.post("/upload")
 async def upload_project(
-    name: str = Form(...),
-    files: list[UploadFile] = File(...),
+    name: Annotated[str, Form(...)],
+    files: Annotated[list[UploadFile], File(...)],
 ) -> ProjectMeta:
     """Create project metadata for an uploaded project.
 

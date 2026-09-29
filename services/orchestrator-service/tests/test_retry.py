@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 
 from app.graph.nodes import should_retry
 from app.config import settings

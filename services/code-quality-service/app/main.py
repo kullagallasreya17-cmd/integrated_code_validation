@@ -100,37 +100,43 @@ def _detect_hotspots(raw_issues: list[dict]) -> list[dict]:
         label = code.replace("COMPLEXITY_", "")
         complexity_map = {"A": 5, "B": 10, "C": 15, "D": 20, "E": 27, "F": 40}
         complexity = complexity_map.get(label, 0)
+        if complexity >= 20:
+            risk_level = "High"
+        elif complexity >= 10:
+            risk_level = "Medium"
+        else:
+            risk_level = "Low"
         hotspots.append({
             "function_name": issue.get("function_name") or issue.get("message", "complex_function").split("'")[1] if "'" in (issue.get("message") or "") else "complex_function",
             "file": issue.get("file"),
             "line": issue.get("line_number"),
             "complexity": complexity,
-            "risk_level": "High" if complexity >= 20 else "Medium" if complexity >= 10 else "Low",
+            "risk_level": risk_level,
             "source": issue.get("source"),
         })
     hotspots.sort(key=lambda entry: (-entry["complexity"], entry["file"] or "", entry["line"] or 0))
     return hotspots[:10]
 
 
-def _per_file_summary(files: dict[str, str], findings: list) -> dict:
-    grouped: dict[str, dict] = {}
-    for path in files:
-        grouped[path] = {"errors": 0, "warnings": 0, "complexity": "Low", "issues": 0}
+def per_file_summary(files: dict[str, str], findings: list) -> dict:
+    def new_file_summary() -> dict:
+        return {"errors": 0, "warnings": 0, "complexity": "Low", "issues": 0}
+
+    grouped = {path: new_file_summary() for path in files}
     for finding in findings:
-        file_path = finding.file
-        if file_path not in grouped:
-            grouped[file_path] = {"errors": 0, "warnings": 0, "complexity": "Low", "issues": 0}
-        grouped[file_path]["issues"] += 1
+        file_summary = grouped.setdefault(finding.file, new_file_summary())
+        file_summary["issues"] += 1
         severity = finding.severity.value if hasattr(finding.severity, "value") else str(finding.severity)
-        if severity in {"high", "critical"}:
-            grouped[file_path]["errors"] += 1
-        elif severity == "medium":
-            grouped[file_path]["warnings"] += 1
+        file_summary["errors"] += severity in {"high", "critical"}
+        file_summary["warnings"] += severity == "medium"
         if finding.issue.startswith("COMPLEXITY"):
-            grouped[file_path]["complexity"] = "High" if grouped[file_path]["complexity"] != "High" else "High"
-    for data in grouped.values():
-        if data["errors"] > 0 or data["warnings"] >= 3:
-            data["complexity"] = "High" if data["warnings"] >= 3 else "Medium"
+            file_summary["complexity"] = "High"
+
+    for file_summary in grouped.values():
+        if file_summary["warnings"] >= 3:
+            file_summary["complexity"] = "High"
+        elif file_summary["errors"] > 0:
+            file_summary["complexity"] = "Medium"
     return grouped
 
 
@@ -224,7 +230,7 @@ def analyze(request: AnalyzeRequest):
     quality_summary["tool_runs"] = tool_runs
     quality_summary["tool_results"] = {item["tool"]: {"status": item["status"], "finding_count": item["finding_count"], "error": item.get("error"), "findings": item.get("findings", [])} for item in tool_runs}
     quality_summary["hotspots"] = _detect_hotspots(raw_issues)
-    quality_summary["per_file"] = _per_file_summary(files, findings)
+    quality_summary["per_file"] = per_file_summary(files, findings)
 
     return FindingsResponse(
         project_id=request.project_id,

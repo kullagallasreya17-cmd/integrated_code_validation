@@ -4,7 +4,6 @@ channel of its own, so this wraps the Python API directly instead of
 shelling out, which is more reliable in a sandboxed service.
 """
 from radon.complexity import cc_visit
-from radon.visitors import ComplexityVisitor
 
 # Radon grades: A (1-5) .. F (41+). Anything C or worse is worth flagging.
 _GRADE_SEVERITY = {

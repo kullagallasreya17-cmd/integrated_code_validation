@@ -150,7 +150,10 @@ async def api_analysis_results(run_id: str):
     }
 
 
-@api_router.post("/agents/code-quality/analyze")
+@api_router.post(
+    "/agents/code-quality/analyze",
+    responses={502: {"description": "Code Quality service unavailable"}},
+)
 async def api_code_quality_analysis(request: dict):
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
