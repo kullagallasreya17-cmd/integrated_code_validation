@@ -89,9 +89,39 @@ async function request<T>(path: string, options: RequestInit = {}, isForm = fals
   return await response.text() as T;
 }
 
+function postWithProgress<T>(path: string, body: unknown, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const serialized = JSON.stringify(body);
+    xhr.open("POST", `${API_BASE_URL}${path}`);
+    buildHeaders({ method: "POST", body: serialized }, false).forEach((value, key) => xhr.setRequestHeader(key, value));
+    xhr.timeout = 120_000;
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) window.dispatchEvent(new CustomEvent("coding-validation:session-expired", { detail: { from: window.location.pathname } }));
+      if (xhr.status < 200 || xhr.status >= 300) { reject(safeError(xhr.status)); return; }
+      if (xhr.status === 204) { resolve(undefined as T); return; }
+      const contentType = xhr.getResponseHeader("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        try { resolve(JSON.parse(xhr.responseText) as T); }
+        catch { reject(new ApiError("The service returned an unreadable response.", xhr.status)); }
+      } else resolve(xhr.responseText as T);
+    };
+    xhr.onerror = () => reject(new ApiError("Unable to reach the service. Check your connection and try again.", 0));
+    xhr.ontimeout = () => reject(new ApiError("The service did not accept the validation request before the timeout.", 0));
+    xhr.onabort = () => reject(new DOMException("The request was cancelled.", "AbortError"));
+    if (signal?.aborted) { xhr.abort(); return; }
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(serialized);
+  });
+}
+
 export const apiClient = {
   get: <T>(path: string, signal?: AbortSignal): Promise<T> => request<T>(path, { method: "GET", signal }),
   post: <T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> => request<T>(path, { method: "POST", body: JSON.stringify(body), signal }),
+  postWithProgress: <T>(path: string, body: unknown, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<T> => postWithProgress<T>(path, body, onProgress, signal),
   patch: <T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> => request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal }),
   delete: <T>(path: string, signal?: AbortSignal): Promise<T> => request<T>(path, { method: "DELETE", signal }),
   postForm: <T>(path: string, body: FormData, signal?: AbortSignal): Promise<T> => request<T>(path, { method: "POST", body, signal }, true),

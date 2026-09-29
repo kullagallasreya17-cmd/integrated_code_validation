@@ -1,8 +1,11 @@
+import type { WorkflowRunResponse } from "../types/finding";
+
 interface AgentStatusPanelProps {
-  activeStep: number;
+  workflowStep: string;
+  workflowStatus: string;
   progressMessage?: string;
-  validationStatus?: string;
   preview?: boolean;
+  result?: WorkflowRunResponse | null;
 }
 
 const AGENTS = [
@@ -15,51 +18,86 @@ const AGENTS = [
   ["report", "Report Agent"],
 ];
 
-const AGENT_BY_WORKFLOW_STEP: Record<number, number> = {
-  0: 0,
-  1: 2,
-  3: 6,
-  4: 6,
-  5: 4,
-  6: 5,
-  7: 2,
-  8: 5,
-  9: 6,
-};
-
-type AgentCardStatus = "completed" | "running" | "pending";
+type AgentCardStatus = "completed" | "running" | "pending" | "failed" | "not reported";
 
 const STATUS_SYMBOL: Record<AgentCardStatus, string> = {
   completed: "✓",
   running: "●",
   pending: "○",
+  failed: "!",
+  "not reported": "-",
 };
 
-const VALIDATION_LABEL: Record<string, string> = {
-  passed: "PASS",
-  failed: "FAIL",
+const STAGE_AGENTS: Record<string, string[]> = {
+  understand: ["analysis"],
+  analyze: ["security", "quality", "resource"],
+  reanalyze: ["quality"],
+  repair: ["repair"],
+  validate: ["validation"],
+  finalize: ["report"],
 };
 
-function getAgentStatus(index: number, activeAgentIndex: number, preview: boolean): AgentCardStatus {
-  if (preview) return index === 0 ? "completed" : "pending";
-  if (index < activeAgentIndex) return "completed";
-  if (index === activeAgentIndex) return "running";
+const AGENT_ERRORS: Record<string, string[]> = {
+  analysis: ["analysis", "understand"],
+  security: ["security"],
+  quality: ["quality"],
+  resource: ["bug_resource", "resource"],
+  repair: ["repair"],
+  validation: ["validation", "sandbox"],
+  report: ["report", "finalize"],
+}
+
+const STAGE_ORDER = ["understand", "analyze", "aggregate", "explain_prioritize", "repair", "validate", "reanalyze", "compare", "finalize"];
+
+function textField(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function reportedAgentStatus(key: string, result: WorkflowRunResponse): AgentCardStatus {
+  const report = result.final_report;
+  const errors = [...(report.agent_errors ?? []), ...(report.workflow_summary?.agent_failures ?? [])];
+  if (errors.some((item) => AGENT_ERRORS[key].some((name) => item.agent.toLowerCase().includes(name)))) return "failed";
+  const stages = report.stage_history ?? [];
+  const relevant = stages.filter((stage) => STAGE_AGENTS[textField(stage.stage) ?? ""]?.includes(key));
+  const latest = relevant[relevant.length - 1];
+  if (!latest) return "not reported";
+  const status = textField(latest.status);
+  if (status === "failed") return "failed";
+  if (["completed", "passed", "partial"].includes(status ?? "")) return "completed";
+  return "not reported";
+}
+
+function liveAgentStatus(key: string, step: string, status: string): AgentCardStatus {
+  const rank = STAGE_ORDER.indexOf(step);
+  const assignedStages = Object.entries(STAGE_AGENTS).filter(([, agentKeys]) => agentKeys.includes(key)).map(([stage]) => stage);
+  if (status === "failed") return assignedStages.includes(step) ? "failed" : "pending";
+  if (status !== "working" && status !== "submitted" && status !== "queued") return "pending";
+  if (rank < 0) return "not reported";
+  const assignedRank = Math.min(...assignedStages.map((stage) => STAGE_ORDER.indexOf(stage)));
+  if (step === "reanalyze" && key === "quality") return "running";
+  if (assignedRank < rank) return "completed";
+  if (assignedStages.includes(step)) return "running";
   return "pending";
 }
 
-export function AgentStatusPanel({ activeStep, progressMessage, validationStatus, preview = false }: Readonly<AgentStatusPanelProps>) {
+function getAgentCardStatus(preview: boolean, result: WorkflowRunResponse | null | undefined, key: string, step: string, status: string): AgentCardStatus {
+  if (preview) return "pending";
+  if (result) return reportedAgentStatus(key, result);
+  return liveAgentStatus(key, step, status);
+}
+
+export function AgentStatusPanel({ workflowStep, workflowStatus, progressMessage, preview = false, result }: Readonly<AgentStatusPanelProps>) {
   return (
     <div className="agent-panel">
-      <div className="agent-panel__header"><span className="kicker">A2A / workflow view</span><span className="agent-panel__pulse"><i /> {progressMessage ?? "Waiting for workflow"}</span></div>
+      <div className="agent-panel__header"><span className="kicker">A2A / workflow view · {workflowStatus}</span><span className="agent-panel__pulse"><i /> {progressMessage ?? "Waiting for workflow"}</span></div>
       <div className="agent-grid">
         {AGENTS.map(([key, label], index) => {
-          const activeAgentIndex = AGENT_BY_WORKFLOW_STEP[activeStep] ?? 0;
-          const status = getAgentStatus(index, activeAgentIndex, preview);
-          return <div className={`agent-card agent-card--${status}`} key={key}><span className="agent-card__index">0{index + 1}</span><span><strong>{label}</strong><small>{status}</small></span><b>{STATUS_SYMBOL[status]}</b></div>;
+          const agentKey = String(key);
+          const status = getAgentCardStatus(preview, result, agentKey, workflowStep, workflowStatus);
+          return <div className={`agent-card agent-card--${status.replace(" ", "-")}`} key={agentKey}><span className="agent-card__index">0{index + 1}</span><span><strong>{label}</strong><small>{status}</small></span><b>{STATUS_SYMBOL[status]}</b></div>;
         })}
       </div>
-      {!preview && (activeStep === 1 || activeStep === 7) && <div className="quality-live"><div><strong>Code Quality Agent</strong><small>Ruff · Pylint · Radon</small></div><span><i /> running</span></div>}
-      {validationStatus && <div className={`workflow-outcome workflow-outcome--${validationStatus}`}><span>{VALIDATION_LABEL[validationStatus] ?? "PENDING"}</span><small>Validation outcome</small></div>}
+      {result && <div className={`workflow-outcome workflow-outcome--${result.validation_status}`}><span>{result.validation_status.toUpperCase()}</span><small>Validation outcome · {result.retry_count} repair retries</small></div>}
     </div>
   );
 }

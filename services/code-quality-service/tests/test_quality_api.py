@@ -42,6 +42,20 @@ def test_analyze_rejects_path_traversal():
     assert resp.status_code == 422
 
 
+def test_analyze_rejects_duplicate_normalized_file_paths():
+    payload = {
+        "project_id": "duplicate-files",
+        "files": [
+            {"path": "src/app.py", "content": "first = True\n"},
+            {"path": "src\\app.py", "content": "second = True\n"},
+        ],
+        "tools": ["ruff"],
+    }
+    response = client.post("/analyze", json=payload)
+
+    assert response.status_code == 422
+
+
 def test_analyze_rejects_unknown_tool():
     payload = {
         "project_id": "proj-4",
@@ -74,7 +88,52 @@ def test_analyze_keeps_partial_results_when_one_tool_fails(monkeypatch):
     body = resp.json()
     assert resp.status_code == 200
     assert body["findings_count"] == 2
-    assert body["error"] == "pylint: boom"
+    assert body["error"] == "pylint: failed"
+    assert body["quality_summary"]["tool_results"]["pylint"]["status"] == "failed"
+    assert "boom" not in body["error"]
+
+
+def test_analyze_marks_missing_analyzer_unavailable_without_losing_other_results(monkeypatch):
+    from app import main
+
+    monkeypatch.setattr(main, "run_ruff", lambda files: [{
+        "source": "ruff", "file": "app.py", "line_number": 1,
+        "code": "F401", "message": "unused import", "severity_hint": "medium",
+    }])
+    monkeypatch.setattr(main, "run_pylint", lambda files: (_ for _ in ()).throw(FileNotFoundError("C:/private/path/pylint.exe")))
+
+    response = client.post("/analyze", json={
+        "project_id": "missing-pylint",
+        "files": [{"path": "app.py", "content": "import os\n"}],
+        "tools": ["ruff", "pylint"],
+    })
+
+    body = response.json()
+    assert body["quality_summary"]["tool_results"]["ruff"]["status"] == "completed"
+    assert body["quality_summary"]["tool_results"]["pylint"]["status"] == "unavailable"
+    assert "C:/private/path" not in body["error"]
+
+
+def test_analyze_fails_quality_gate_when_all_selected_tools_are_unavailable(monkeypatch):
+    from app import main
+
+    for tool in ("ruff", "pylint", "radon"):
+        monkeypatch.setattr(
+            main,
+            f"run_{tool}",
+            lambda files: (_ for _ in ()).throw(FileNotFoundError("analyzer missing")),
+        )
+
+    response = client.post("/analyze", json={
+        "project_id": "no-analyzers",
+        "files": [{"path": "app.py", "content": "value = 1\n"}],
+        "tools": ["ruff", "pylint", "radon"],
+    })
+
+    summary = response.json()["quality_summary"]
+    assert summary["quality_gate_status"] == "FAIL"
+    assert summary["quality_gate"]["status"] == "FAIL"
+    assert {item["tool"] for item in summary["quality_gate"]["blocking_tools"]} == {"ruff", "pylint", "radon"}
 
 
 def test_analyze_returns_quality_summary(monkeypatch):
@@ -99,6 +158,33 @@ def test_analyze_returns_quality_summary(monkeypatch):
     assert summary["total_findings"] == 1
     assert summary["by_tool"]["ruff"] == 1
     assert summary["by_severity"]["medium"] == 1
+    assert summary["style_issues"] == 0
+    assert summary["complexity_issues"] == 0
+    assert summary["by_category"]["code_quality"] == 1
+
+
+def test_analyze_summarizes_style_and_complexity_categories(monkeypatch):
+    from app import main
+
+    monkeypatch.setattr(main, "run_ruff", lambda files: [{
+        "source": "ruff", "file": "app.py", "line_number": 1,
+        "code": "C0116", "message": "Missing function or method docstring", "severity_hint": "low",
+    }])
+    monkeypatch.setattr(main, "run_pylint", lambda files: [])
+    monkeypatch.setattr(main, "run_radon", lambda files: [{
+        "source": "radon", "file": "app.py", "line_number": 2,
+        "code": "COMPLEXITY_D", "message": "'run' has cyclomatic complexity 22 (grade D)", "severity_hint": "medium",
+    }])
+
+    response = client.post("/analyze", json={
+        "project_id": "category-summary",
+        "files": [{"path": "app.py", "content": "def run():\n    return True\n"}],
+    })
+
+    summary = response.json()["quality_summary"]
+    assert summary["style_issues"] == 1
+    assert summary["complexity_issues"] == 1
+    assert summary["by_category"]["code_quality"] == 2
 
 
 def test_analyze_exposes_quality_gate_and_hotspots(monkeypatch):

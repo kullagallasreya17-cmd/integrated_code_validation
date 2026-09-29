@@ -1,4 +1,4 @@
-import { safeEvidence } from "../analysis/model";
+import { isErrorFinding, isWarningFinding, safeEvidence } from "../analysis/model";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { FindingsTable } from "../components/FindingsTable";
@@ -25,6 +25,8 @@ export function ResultsPage({ originalFiles, result, onRerun }: Readonly<Results
   const quality = result.final_report.quality_summary;
   const reanalysis = result.final_report.reanalysis_summary;
   const comparison = result.final_report.comparison;
+  const errorCount = quality?.errors ?? result.findings.filter(isErrorFinding).length;
+  const warningCount = quality?.warnings ?? result.findings.filter(isWarningFinding).length;
 
   return (
     <section className="page page--results">
@@ -57,6 +59,8 @@ export function ResultsPage({ originalFiles, result, onRerun }: Readonly<Results
           <div className="summary-card summary-card--main"><span className="summary-card__label">Validation status</span><strong>{result.validation_status}</strong><small>{result.retry_count} repair retries used</small></div>
           <div className="summary-card"><span className="summary-card__label">Total findings</span><strong>{result.findings.length}</strong><small>across submitted files</small></div>
           <div className="summary-card"><span className="summary-card__label">High risk</span><strong>{result.findings.filter((f) => f.severity === "high" || f.severity === "critical").length}</strong><small>needs attention</small></div>
+          <div className="summary-card"><span className="summary-card__label">Errors</span><strong>{errorCount}</strong><small>critical or high severity</small></div>
+          <div className="summary-card"><span className="summary-card__label">Warnings</span><strong>{warningCount}</strong><small>medium severity</small></div>
           <div className="summary-card"><span className="summary-card__label">Files scanned</span><strong>{originalFiles.length}</strong><small>Python sources</small></div>
         </div>
 

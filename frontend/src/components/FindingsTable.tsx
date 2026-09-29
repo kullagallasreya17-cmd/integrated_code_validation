@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { getFindingStatusHistory, updateFindingStatus, type FindingStatusHistoryEntry } from "../api/findings";
 import { usePermission } from "../auth/permissions";
 import type { Finding, FindingStatus, Severity } from "../types/finding";
-import { safeEvidence } from "../analysis/model";
+import { isComplexityFinding, isErrorFinding, isStyleFinding, isWarningFinding, safeEvidence } from "../analysis/model";
 
 interface FindingsTableProps {
   findings: Finding[];
@@ -10,13 +10,19 @@ interface FindingsTableProps {
 }
 
 const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-const SEVERITY_FILTERS: Array<"all" | Severity> = ["all", "critical", "high", "medium", "low"];
-const CATEGORY_FILTERS = ["all", "code_quality", "security", "bug", "resource"] as const;
+const SEVERITY_FILTERS: Array<"all" | Severity> = ["all", "critical", "high", "medium", "low", "info"];
+const CATEGORY_FILTERS = ["all", "code_quality", "security", "bug", "resource", "errors", "warnings", "style", "complexity"] as const;
+const CATEGORY_LABELS: Record<(typeof CATEGORY_FILTERS)[number], string> = {
+  all: "All areas", code_quality: "Code quality", security: "Security", bug: "Bugs", resource: "Resources",
+  errors: "Errors", warnings: "Warnings", style: "Style", complexity: "Complexity",
+};
+type FindingSort = "severity" | "file" | "line";
 
 export function FindingsTable({ findings, onSelect }: Readonly<FindingsTableProps>) {
   const [severity, setSeverity] = useState<"all" | Severity>("all");
   const [category, setCategory] = useState<(typeof CATEGORY_FILTERS)[number]>("all");
   const [tool, setTool] = useState("all");
+  const [sort, setSort] = useState<FindingSort>("severity");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [currentFindings, setCurrentFindings] = useState(findings);
@@ -38,7 +44,7 @@ export function FindingsTable({ findings, onSelect }: Readonly<FindingsTableProp
   const query = search.trim().toLowerCase();
   const sorted = [...currentFindings]
     .filter((finding) => severity === "all" || finding.severity === severity)
-    .filter((finding) => category === "all" || finding.category === category)
+    .filter((finding) => categoryMatches(finding, category))
     .filter((finding) => tool === "all" || finding.tool === tool)
     .filter(
       (finding) =>
@@ -47,7 +53,7 @@ export function FindingsTable({ findings, onSelect }: Readonly<FindingsTableProp
         finding.issue.toLowerCase().includes(query) ||
         finding.description.toLowerCase().includes(query),
     )
-    .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+    .sort((a, b) => compareFindings(a, b, sort));
 
   async function changeStatuses(ids: string[], status: FindingStatus) {
     if (status === "Fixed (validated)") return;
@@ -85,9 +91,10 @@ export function FindingsTable({ findings, onSelect }: Readonly<FindingsTableProp
         </fieldset>
         <fieldset className="findings-table__filters">
           <legend className="visually-hidden">Filter by category</legend>
-          {CATEGORY_FILTERS.map((filter) => <button key={filter} className={`btn ${category === filter ? "btn--primary" : ""}`} onClick={() => setCategory(filter)}>{filter === "all" ? "All areas" : filter.replace("_", " ")}</button>)}
+          {CATEGORY_FILTERS.map((filter) => <button key={filter} className={`btn ${category === filter ? "btn--primary" : ""}`} onClick={() => setCategory(filter)}>{CATEGORY_LABELS[filter]}</button>)}
         </fieldset>
         <select className="findings-table__tool-select" value={tool} onChange={(event) => setTool(event.target.value)} aria-label="Filter by tool"><option value="all">All tools</option><option value="ruff">Ruff</option><option value="pylint">Pylint</option><option value="radon">Radon</option></select>
+        <select className="findings-table__tool-select" value={sort} onChange={(event) => setSort(event.target.value as FindingSort)} aria-label="Sort findings"><option value="severity">Sort: severity</option><option value="file">Sort: file</option><option value="line">Sort: line</option></select>
         </div>
         <input
           type="search"
@@ -153,6 +160,21 @@ export function FindingsTable({ findings, onSelect }: Readonly<FindingsTableProp
     </div>
   );
 
+}
+
+function categoryMatches(finding: Finding, category: (typeof CATEGORY_FILTERS)[number]): boolean {
+  if (category === "all") return true;
+  if (category === "errors") return isErrorFinding(finding);
+  if (category === "warnings") return isWarningFinding(finding);
+  if (category === "style") return isStyleFinding(finding);
+  if (category === "complexity") return isComplexityFinding(finding);
+  return finding.category === category;
+}
+
+function compareFindings(first: Finding, second: Finding, sort: FindingSort): number {
+  if (sort === "file") return first.file.localeCompare(second.file) || SEVERITY_ORDER[first.severity] - SEVERITY_ORDER[second.severity];
+  if (sort === "line") return (first.line_number ?? Number.MAX_SAFE_INTEGER) - (second.line_number ?? Number.MAX_SAFE_INTEGER);
+  return SEVERITY_ORDER[first.severity] - SEVERITY_ORDER[second.severity];
 }
 
 interface StatusHistoryContentProps {

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, HTTPException
@@ -18,6 +19,7 @@ app = FastAPI(title="Coding Validation Orchestrator", version="1.0.0")
 run_store = RunStore(settings.run_store_path)
 records: dict[str, dict] = {}
 dispatcher = A2ADispatcher(records)
+logger = logging.getLogger(__name__)
 
 
 def _record(project_id: str) -> dict:
@@ -36,24 +38,43 @@ async def _run_workflow(request: StartAnalysisRequest) -> None:
 	records[project_id] = record
 	run_store.upsert(project_id, record)
 
+	def publish_stage(stage: str, stage_status: str) -> None:
+		record.update({
+			"project_id": project_id,
+			"status": "working",
+			"progress": stage,
+			"stage_status": stage_status,
+		})
+		records[project_id] = record
+		run_store.upsert(project_id, record)
+
 	try:
 		workflow = build_workflow()
-		result = await workflow.ainvoke({
-			"project_id": project_id,
-			"project_files": {item.path: item.content for item in request.files},
-			"project_context": request.project_context,
-			"tools": request.tools,
-		})
+		result = await workflow.ainvoke(
+			{
+				"project_id": project_id,
+				"project_files": {item.path: item.content for item in request.files},
+				"project_context": request.project_context,
+				"tools": request.tools,
+			},
+			config={"configurable": {"on_stage": publish_stage}},
+		)
 		record.update({
 			"status": "completed",
 			"progress": "finalize",
+			"stage_status": "completed",
 			"result": result,
 			"validation_status": result.get("validation_status", "unknown"),
 			"retry_count": result.get("retry_count", 0),
 		})
 	except Exception as exc:  # noqa: BLE001 - convert workflow failure to status
-		record.update({"status": "failed", "error": "Workflow execution failed"})
-		record["internal_error"] = str(exc)
+		logger.error("Workflow %s failed with %s", project_id, type(exc).__name__)
+		record.update({
+			"status": "failed",
+			"stage_status": "failed",
+			"failed_stage": record.get("progress"),
+			"error": "Workflow execution failed. Check configured agent availability and service logs.",
+		})
 	records[project_id] = record
 	run_store.upsert(project_id, record)
 
@@ -78,7 +99,7 @@ async def agent_card() -> dict:
 
 @app.post("/workflow/start")
 async def start_workflow(request: StartAnalysisRequest) -> dict:
-	if request.project_id in records and records[request.project_id].get("status") == "working":
+	if _record(request.project_id).get("status") in {"submitted", "working"}:
 		raise HTTPException(status_code=409, detail="workflow is already running")
 	records[request.project_id] = {
 		"project_id": request.project_id,
@@ -118,6 +139,8 @@ async def workflow_stream(project_id: str) -> StreamingResponse:
 async def a2a_task(task: A2ATaskRequest) -> dict:
 	if task.task_type == "workflow.start":
 		response, request = dispatcher.submit_workflow(task)
+		if _record(request.project_id).get("status") in {"submitted", "working"}:
+			raise HTTPException(status_code=409, detail="workflow is already running")
 		records[request.project_id] = {
 			"project_id": request.project_id,
 			"status": "submitted",

@@ -40,6 +40,10 @@ def run_pylint(files: dict[str, str]) -> list[dict]:
             )
             raw_output = result.stdout.strip()
             if not raw_output:
+                if result.returncode != 0:
+                    raise RuntimeError("pylint exited without machine-readable output")
+                return issues
+            if raw_output == "No files to lint: exiting.":
                 return issues
 
             pylint_issues = json.loads(raw_output)
@@ -56,29 +60,11 @@ def run_pylint(files: dict[str, str]) -> list[dict]:
                         "severity_hint": _PYLINT_SEVERITY_MAP.get(category, "medium"),
                     }
                 )
-        except FileNotFoundError:
-            issues.append(
-                {
-                    "source": "pylint",
-                    "file": None,
-                    "line_number": None,
-                    "code": "PYLINT_NOT_INSTALLED",
-                    "message": "pylint is not installed in this environment",
-                    "severity_hint": "low",
-                }
-            )
-        except subprocess.TimeoutExpired:
-            issues.append(
-                {
-                    "source": "pylint",
-                    "file": None,
-                    "line_number": None,
-                    "code": "PYLINT_TIMEOUT",
-                    "message": "pylint analysis timed out",
-                    "severity_hint": "low",
-                }
-            )
-        except json.JSONDecodeError:
-            pass
+        except FileNotFoundError as exc:
+            raise FileNotFoundError("pylint executable is unavailable") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError("pylint analysis timed out") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError("pylint returned malformed JSON") from exc
 
     return issues

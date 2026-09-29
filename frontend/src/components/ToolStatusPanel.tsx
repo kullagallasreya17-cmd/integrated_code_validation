@@ -3,6 +3,5 @@ interface ToolStatusPanelProps {
 }
 
 export function ToolStatusPanel({ quality }: ToolStatusPanelProps) {
-  const tools = quality.map((tool) => [tool, "configured"]);
-  return <section className="tool-status"><div className="section-label"><h2>Tool status</h2><span>MCP / analysis sources</span></div><div className="tool-status__grid">{tools.map(([tool, status]) => <div className="tool-status__item" key={tool}><i className={status === "configured" ? "tool-status__ok" : "tool-status__pending"} /> <strong>{tool}</strong><small>{status}</small></div>)}</div></section>;
+  return <section className="tool-status"><div className="section-label"><h2>Selected tools</h2><span>Execution status appears in the run results</span></div><div className="tool-status__grid">{quality.map((tool) => <div className="tool-status__item" key={tool}><i className="tool-status__pending" /> <strong>{tool}</strong><small>Selected · not run yet</small></div>)}</div></section>;
 }

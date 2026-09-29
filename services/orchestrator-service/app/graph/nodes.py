@@ -316,6 +316,12 @@ def should_retry(state: WorkflowState) -> str:
     failed status so the graph always terminates."""
     if state.get("validation_status") == "passed":
         return "finalize"
+    sandbox_result = state.get("sandbox_result", {})
+    validation_results = state.get("validation_results", {})
+    if sandbox_result and not sandbox_result.get("executed"):
+        return "finalize"
+    if validation_results.get("error"):
+        return "finalize"
     if state.get("retry_count", 0) >= settings.max_retries:
         return "finalize"
     return "retry"

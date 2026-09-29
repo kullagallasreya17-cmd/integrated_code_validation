@@ -3,7 +3,7 @@ export type FindingStatus = "Open" | "In repair" | "Fixed (validated)" | "Needs 
 
 export interface Finding {
   finding_id: string;
-  category: "security" | "code_quality" | "resource" | "bug" | "maintainability";
+  category: "security" | "code_quality" | "resource" | "bug" | "maintainability" | "style" | "convention" | "complexity";
   severity: Severity;
   file: string;
   line_number: number | null;
@@ -120,4 +120,7 @@ export interface RunHistoryEntry {
 export interface ProgressEvent {
   step: string;
   message: string;
+  status?: string;
+  retry_count?: number;
+  error?: string;
 }

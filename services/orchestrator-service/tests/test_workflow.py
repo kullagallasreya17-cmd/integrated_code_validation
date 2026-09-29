@@ -40,13 +40,15 @@ def test_workflow_runs_end_to_end_with_downstream_boundaries(monkeypatch):
     monkeypatch.setattr(validation_client, "validate", validation_pass)
 
     wf = build_workflow()
+    stage_events = []
 
     result = asyncio.run(wf.ainvoke(
         {
             "project_id": "proj-test",
             "project_files": {"app.py": "print('hi')\n"},
             "project_context": {},
-        }
+        },
+        config={"configurable": {"on_stage": lambda stage, status: stage_events.append((stage, status))}},
     ))
 
     assert result["project_id"] == "proj-test" if "project_id" in result else True
@@ -62,6 +64,9 @@ def test_workflow_runs_end_to_end_with_downstream_boundaries(monkeypatch):
     assert "explanations" in result["final_report"]
     assert "reanalysis_findings" in result["final_report"]
     assert "comparison" in result["final_report"]
+    assert ("understand", "running") in stage_events
+    assert ("analyze", "running") in stage_events
+    assert ("compare", "completed") in stage_events
 
 
 def test_start_request_rejects_invalid_project_files():
@@ -78,6 +83,12 @@ def test_start_request_rejects_duplicate_paths():
                 {"path": "main.py", "content": ""},
             ],
         )
+
+
+@pytest.mark.parametrize("path", ["C:/private/app.py", "../app.py", "/tmp/app.py", "notes.txt"])
+def test_start_request_rejects_unsafe_or_non_python_paths(path):
+    with pytest.raises(ValueError):
+        StartAnalysisRequest(project_id="p", files=[{"path": path, "content": "print('x')"}])
 
 
 def test_workflow_summary_records_quality_gate_and_stop_status(monkeypatch):

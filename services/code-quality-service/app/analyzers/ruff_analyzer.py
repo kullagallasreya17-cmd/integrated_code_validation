@@ -29,6 +29,8 @@ def run_ruff(files: dict[str, str]) -> list[dict]:
             )
             raw_output = result.stdout.strip()
             if not raw_output:
+                if result.returncode != 0:
+                    raise RuntimeError("ruff exited without machine-readable output")
                 return issues
 
             ruff_issues = json.loads(raw_output)
@@ -44,29 +46,11 @@ def run_ruff(files: dict[str, str]) -> list[dict]:
                         "severity_hint": "medium",
                     }
                 )
-        except FileNotFoundError:
-            issues.append(
-                {
-                    "source": "ruff",
-                    "file": None,
-                    "line_number": None,
-                    "code": "RUFF_NOT_INSTALLED",
-                    "message": "ruff is not installed in this environment",
-                    "severity_hint": "low",
-                }
-            )
-        except subprocess.TimeoutExpired:
-            issues.append(
-                {
-                    "source": "ruff",
-                    "file": None,
-                    "line_number": None,
-                    "code": "RUFF_TIMEOUT",
-                    "message": "ruff analysis timed out",
-                    "severity_hint": "low",
-                }
-            )
-        except json.JSONDecodeError:
-            pass
+        except FileNotFoundError as exc:
+            raise FileNotFoundError("ruff executable is unavailable") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError("ruff analysis timed out") from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError("ruff returned malformed JSON") from exc
 
     return issues

@@ -1,3 +1,4 @@
+import logging
 from time import perf_counter
 
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from app.config import settings
 from shared.schemas.finding import FindingsResponse
 
 app = FastAPI(title="Code Quality Service", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +36,8 @@ def _quality_summary(files: dict[str, str], findings: list) -> dict:
     by_tool = {"ruff": 0, "pylint": 0, "radon": 0}
     by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     complex_functions = 0
+    style_issues = 0
+    by_category: dict[str, int] = {}
     for finding in findings:
         tool = finding.tool or "unknown"
         if tool in by_tool:
@@ -43,6 +47,11 @@ def _quality_summary(files: dict[str, str], findings: list) -> dict:
             by_severity[severity] += 1
         if finding.issue.startswith("COMPLEXITY"):
             complex_functions += 1
+        category = finding.category.value if hasattr(finding.category, "value") else str(finding.category)
+        by_category[category] = by_category.get(category, 0) + 1
+        subcategory = finding.subcategory.value if hasattr(finding.subcategory, "value") else str(finding.subcategory or "")
+        if subcategory in {"style", "convention"}:
+            style_issues += 1
 
     errors = by_severity["critical"] + by_severity["high"]
     warnings = by_severity["medium"]
@@ -63,6 +72,9 @@ def _quality_summary(files: dict[str, str], findings: list) -> dict:
         "warnings": warnings,
         "info": info,
         "complex_functions": complex_functions,
+        "complexity_issues": complex_functions,
+        "style_issues": style_issues,
+        "by_category": by_category,
         "overall_score": overall_score,
         "quality_gate_status": gate_status,
         "quality_gate": {
@@ -203,28 +215,50 @@ def analyze(request: AnalyzeRequest):
                 "findings": tool_issues,
             })
         except Exception as exc:  # noqa: BLE001 - preserve other tool results
-            tool_errors.append(f"{tool}: {exc}")
+            if isinstance(exc, FileNotFoundError):
+                tool_status = "unavailable"
+                safe_error = "Analyzer executable is unavailable."
+                finding_code = f"{tool.upper()}_UNAVAILABLE"
+            elif isinstance(exc, TimeoutError):
+                tool_status = "timed_out"
+                safe_error = "Analyzer exceeded its execution time limit."
+                finding_code = f"{tool.upper()}_TIMEOUT"
+            else:
+                tool_status = "failed"
+                safe_error = "Analyzer failed; check service logs for details."
+                finding_code = f"{tool.upper()}_FAILED"
+            logger.warning("Code quality tool %s %s (%s)", tool, tool_status, type(exc).__name__)
+            tool_errors.append(f"{tool}: {tool_status}")
             raw_issues.append(
                 {
                     "source": tool,
                     "file": None,
                     "line_number": None,
-                    "code": f"{tool.upper()}_FAILED",
-                    "message": "Analyzer failed; review service logs for details",
+                    "code": finding_code,
+                    "message": safe_error,
                     "severity_hint": "low",
                 }
             )
             tool_runs.append({
                 "tool": tool,
-                "status": "failed",
+                "status": tool_status,
                 "finding_count": 1,
                 "duration_ms": round((perf_counter() - started) * 1000, 2),
-                "error": str(exc),
+                "error": safe_error,
                 "findings": [],
             })
 
     findings = normalize(raw_issues)
     quality_summary = _quality_summary(files, findings)
+    unavailable_tools = [
+        {"tool": item["tool"], "status": item["status"]}
+        for item in tool_runs
+        if item["status"] != "completed"
+    ]
+    if unavailable_tools:
+        quality_summary["quality_gate_status"] = "FAIL"
+        quality_summary["quality_gate"]["status"] = "FAIL"
+        quality_summary["quality_gate"]["blocking_tools"] = unavailable_tools
     quality_summary["quality_score"] = _quality_score(quality_summary)
     quality_summary["selected_tools"] = tools
     quality_summary["tool_runs"] = tool_runs

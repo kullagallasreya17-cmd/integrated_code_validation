@@ -1,3 +1,5 @@
+from pathlib import PurePosixPath
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -9,9 +11,13 @@ class ProjectFileIn(BaseModel):
     @classmethod
     def validate_path(cls, value: str) -> str:
         normalized = value.replace("\\", "/").strip()
-        if not normalized or normalized.startswith("/") or ".." in normalized.split("/"):
+        path = PurePosixPath(normalized)
+        has_windows_drive = bool(path.parts) and len(path.parts[0]) == 2 and path.parts[0][1] == ":"
+        if not normalized or path.is_absolute() or has_windows_drive or ".." in path.parts:
             raise ValueError("file path must be relative and stay inside the project")
-        return normalized
+        if path.suffix.lower() != ".py":
+            raise ValueError("only Python .py files are supported")
+        return "/".join(path.parts)
 
 
 class StartAnalysisRequest(BaseModel):

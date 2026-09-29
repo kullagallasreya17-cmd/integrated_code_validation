@@ -11,7 +11,22 @@ export interface StartAnalysisPayload {
 }
 
 interface StreamCompleteEvent {
-  readonly result?: WorkflowRunResponse;
+  readonly result?: unknown;
+}
+
+interface WorkflowStreamSnapshot {
+  readonly project_id?: unknown;
+  readonly status?: unknown;
+  readonly progress?: unknown;
+  readonly error?: unknown;
+  readonly retry_count?: unknown;
+  readonly result?: unknown;
+}
+
+function workflowStatusMessage(status: string, step: string): string {
+  if (status === "failed") return "The orchestrator reported a failed workflow.";
+  if (status === "completed") return "The orchestrator completed validation.";
+  return `Workflow ${status}: ${step}`;
 }
 
 function parseEvent<T>(event: MessageEvent<string>): T {
@@ -19,24 +34,60 @@ function parseEvent<T>(event: MessageEvent<string>): T {
 }
 
 export const api = {
-  async startAnalysis(payload: StartAnalysisPayload, onProgress: (progress: ProgressEvent) => void): Promise<WorkflowRunResponse> {
+  async startAnalysis(payload: StartAnalysisPayload, onProgress: (progress: ProgressEvent) => void, timeoutMs = 10 * 60 * 1000): Promise<WorkflowRunResponse> {
     if (mocksEnabled()) return runMockAnalysis(payload, onProgress);
-    const started = await apiClient.post<StartAnalysisResponse>("/analysis/run", payload);
+    const started = await apiClient.postWithProgress<StartAnalysisResponse>("/analysis/run", payload, (percent) => {
+      onProgress({ step: "upload", status: "uploading", message: `Sending code to orchestrator: ${percent}%` });
+    });
     const projectId = started.project_id || payload.project_id;
 
     return new Promise((resolve, reject) => {
       const source = new EventSource(`${apiBaseUrl()}/analysis/stream/${encodeURIComponent(projectId)}`);
       let settled = false;
+      const timeout = window.setTimeout(() => finish(() => reject(new Error("Validation timed out while waiting for the orchestrator. You can retry the run."))), timeoutMs);
       const finish = (callback: () => void) => {
         if (settled) return;
         settled = true;
+        window.clearTimeout(timeout);
         source.close();
         callback();
       };
 
+      const emitSnapshot = (snapshot: WorkflowStreamSnapshot) => {
+        const status = typeof snapshot.status === "string" ? snapshot.status : "working";
+        const step = typeof snapshot.progress === "string" ? snapshot.progress : "unknown";
+        onProgress({
+          step,
+          status,
+          message: workflowStatusMessage(status, step),
+          retry_count: typeof snapshot.retry_count === "number" ? snapshot.retry_count : undefined,
+        });
+        if (status === "failed") {
+          finish(() => reject(new Error("The orchestrator could not complete this validation run.")));
+          return;
+        }
+        if (status === "completed") {
+          const result = toWorkflowRunResponse(snapshot.result, projectId);
+          if (!result) {
+            finish(() => reject(new Error("The orchestrator completed without a readable results report.")));
+            return;
+          }
+          finish(() => resolve(result));
+        }
+      };
+
+      source.onmessage = (event) => {
+        try {
+          emitSnapshot(JSON.parse(event.data) as WorkflowStreamSnapshot);
+        } catch {
+          onProgress({ step: "unknown", message: "Received an unreadable orchestrator status update." });
+        }
+      };
+
       source.addEventListener("progress", (event) => {
         try {
-          onProgress(parseEvent<ProgressEvent>(event as MessageEvent<string>));
+          const progress = parseEvent<ProgressEvent>(event as MessageEvent<string>);
+          onProgress(progress);
         } catch {
           onProgress({ step: "unknown", message: "Received a progress update." });
         }
@@ -44,8 +95,9 @@ export const api = {
       source.addEventListener("complete", (event) => {
         try {
           const data = parseEvent<StreamCompleteEvent>(event as MessageEvent<string>);
-          if (!data.result) throw new Error("Missing workflow result");
-          finish(() => resolve(data.result as WorkflowRunResponse));
+          const result = toWorkflowRunResponse(data.result, projectId);
+          if (!result) throw new Error("Missing workflow result");
+          finish(() => resolve(result));
         } catch {
           finish(() => reject(new Error("The workflow completed without a readable result.")));
         }
@@ -74,10 +126,49 @@ export const api = {
   },
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> | undefined {
+  return values.find(isRecord);
+}
+
+function firstArray(...values: unknown[]): unknown[] {
+  return values.find(Array.isArray) as unknown[] | undefined ?? [];
+}
+
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined && value !== null);
+}
+
+function normalizeValidationStatus(value: unknown): WorkflowRunResponse["validation_status"] {
+  if (value === "passed" || value === "failed" || value === "pending") return value;
+  return "unknown";
+}
+
+function toWorkflowRunResponse(value: unknown, projectId: string): WorkflowRunResponse | null {
+  if (!isRecord(value)) return null;
+  const nested = firstRecord(value.result);
+  const reportCandidate = firstRecord(value.final_report, nested?.final_report);
+  if (!reportCandidate) return null;
+  const findings = firstArray(value.findings, nested?.findings, reportCandidate.findings);
+  const validationStatus = normalizeValidationStatus(firstDefined(value.validation_status, nested?.validation_status, reportCandidate.validation_status));
+  const retryCount = firstDefined(value.retry_count, nested?.retry_count, reportCandidate.retry_count);
+  return {
+    run_id: typeof value.run_id === "string" ? value.run_id : undefined,
+    project_id: typeof value.project_id === "string" ? value.project_id : projectId,
+    validation_status: validationStatus,
+    retry_count: typeof retryCount === "number" ? retryCount : 0,
+    findings: findings as WorkflowRunResponse["findings"],
+    final_report: reportCandidate as unknown as WorkflowRunResponse["final_report"],
+  };
+}
+
 async function runMockAnalysis(payload: StartAnalysisPayload, onProgress: (progress: ProgressEvent) => void): Promise<WorkflowRunResponse> {
   const steps = ["understand", "analyze", "aggregate", "repair", "validate", "finalize"];
-  for (const step of steps) {
-    onProgress({ step, message: `Mock workflow: ${step}` });
+  for (const [index, step] of steps.entries()) {
+    onProgress({ step, status: "working", retry_count: index >= 3 ? 1 : 0, message: `Mock workflow: ${step}` });
     await new Promise<void>((resolve) => window.setTimeout(resolve, 80));
   }
   const firstFile = payload.files[0];
@@ -105,7 +196,7 @@ async function runMockAnalysis(payload: StartAnalysisPayload, onProgress: (progr
   const qualitySummary = {
     files_analyzed: payload.files.length, total_findings: findings.length, errors: 0, warnings: findings.length, info: 0,
     complex_functions: 1, by_tool: { ruff: 0, pylint: 0, radon: findings.length }, by_severity: { critical: 0, high: 0, medium: findings.length, low: 0, info: 0 },
-    quality_score: 92, quality_gate_status: "PASS", maintainability: { maintainability_index: 84 },
+    quality_score: 92, quality_gate_status: "PASS", quality_gate: { status: "PASS", overall_score: 92, thresholds: { minimum_score: 75, complexity_limit: 3 } }, maintainability: { maintainability_index: 84 },
     tool_runs: toolNames.map((tool) => ({ tool: tool.toLowerCase(), agent: toolResults[tool.toLowerCase()].agent, status: toolResults[tool.toLowerCase()].status, finding_count: toolResults[tool.toLowerCase()].finding_count, duration_ms: toolResults[tool.toLowerCase()].duration_ms, exit_code: toolResults[tool.toLowerCase()].exit_code, available: toolResults[tool.toLowerCase()].available, raw_output: toolResults[tool.toLowerCase()].raw_output })),
     tool_results: toolResults,
     hotspots: [{ function_name: "example", file: firstFile?.path ?? null, line: 1, complexity: 10, risk_level: "Low" }],

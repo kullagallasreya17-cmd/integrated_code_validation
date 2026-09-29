@@ -38,6 +38,14 @@ class AnalyzeRequest(BaseModel):
         description="Subset of ['ruff','pylint','radon'] to run. Defaults to all three.",
     )
 
+    @field_validator("files")
+    @classmethod
+    def validate_unique_file_paths(cls, value: list[ProjectFile]) -> list[ProjectFile]:
+        paths = [file.path for file in value]
+        if len(paths) != len(set(paths)):
+            raise ValueError("project files must have unique paths")
+        return value
+
     @field_validator("project_id")
     @classmethod
     def validate_project_id(cls, value: str) -> str:

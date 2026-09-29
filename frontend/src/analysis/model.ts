@@ -105,3 +105,19 @@ export function safeEvidence(value: string | undefined): string {
     .replace(/(?:[A-Za-z]:\\(?:[^\\\s]+\\)*[^\\\s]*|\/(?:[^/\s]+\/)+[^/\s]*)/g, "[PATH REDACTED]");
   return redacted.split(/\r?\n/).map((line) => line.includes('File "') && /, line \d+/.test(line) ? "[STACK FRAME REDACTED]" : line).join("\n");
 }
+
+export function isComplexityFinding(finding: Finding): boolean {
+  return finding.category === "complexity" || /complexity|radon/i.test(`${finding.issue} ${finding.subcategory ?? ""}`);
+}
+
+export function isStyleFinding(finding: Finding): boolean {
+  return finding.category === "style" || finding.category === "convention" || /style|convention/i.test(`${finding.issue} ${finding.subcategory ?? ""}`);
+}
+
+export function isErrorFinding(finding: Finding): boolean {
+  return finding.severity === "critical" || finding.severity === "high";
+}
+
+export function isWarningFinding(finding: Finding): boolean {
+  return finding.severity === "medium";
+}

@@ -20,6 +20,35 @@ def test_should_retry_returns_finalize_when_budget_exhausted():
     assert should_retry(state) == "finalize"
 
 
+def test_should_retry_does_not_repeat_unavailable_sandbox():
+    state = {
+        "validation_status": "failed",
+        "retry_count": 0,
+        "sandbox_result": {"executed": False, "error": "sandbox unavailable"},
+    }
+    assert should_retry(state) == "finalize"
+
+
+def test_should_retry_does_not_repeat_unavailable_validation_service():
+    state = {
+        "validation_status": "failed",
+        "retry_count": 0,
+        "sandbox_result": {"executed": True},
+        "validation_results": {"passed": False, "error": "validation service unavailable"},
+    }
+    assert should_retry(state) == "finalize"
+
+
+def test_should_retry_keeps_retrying_repairable_validation_failures():
+    state = {
+        "validation_status": "failed",
+        "retry_count": 1,
+        "sandbox_result": {"executed": True},
+        "validation_results": {"passed": False, "remaining_findings": [{"issue": "test failed"}]},
+    }
+    assert should_retry(state) == "retry"
+
+
 def test_validate_does_not_call_validation_when_sandbox_fails(monkeypatch):
     from app.graph import nodes
 

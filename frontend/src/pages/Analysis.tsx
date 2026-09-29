@@ -4,6 +4,9 @@ interface AnalysisPageProps {
   /** Index of the step currently in progress, or DEFAULT_STEPS.length once done. */
   activeStepIndex: number;
   progressMessage?: string;
+  workflowStep: string;
+  workflowStatus: string;
+  retryCount: number;
 }
 
 function buildSteps(activeStepIndex: number): ProgressStep[] {
@@ -15,11 +18,12 @@ function buildSteps(activeStepIndex: number): ProgressStep[] {
   });
 }
 
-export function AnalysisPage({ activeStepIndex, progressMessage }: Readonly<AnalysisPageProps>) {
+export function AnalysisPage({ activeStepIndex, progressMessage, workflowStep, workflowStatus, retryCount }: Readonly<AnalysisPageProps>) {
   return (
     <section className="page page--analysis analysis-shell">
       <div className="kicker">Live workflow <span>02 / 04</span></div>
       <h1>Reading the shape<br /><em>of your code.</em></h1>
+      <output className={`workflow-state workflow-state--${workflowStatus}`} aria-live="polite">Workflow: {workflowStatus} · Stage: {workflowStep || "queued"} · Repair retries: {retryCount}</output>
       {progressMessage && <p className="analysis-pulse"><i />{progressMessage}</p>}
       <AnalysisProgress steps={buildSteps(activeStepIndex)} />
       <div className="analysis-contract"><span>Frontend</span><i>→</i><strong>Orchestrator</strong><i>→</i><span>Code Quality Agent</span><small>Ruff · Pylint · Radon</small></div>
