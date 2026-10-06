@@ -56,6 +56,7 @@ def build_report(state: dict) -> dict:
         "agent_errors": state.get("agent_errors", []),
         "stage_history": state.get("stage_history", []),
         "workflow_trace": state.get("workflow_trace", [item.get("stage") for item in state.get("stage_history", [])]),
+        "analysis_checks": state.get("project_context", {}).get("analysis_checks"),
         "code_structure": state.get("code_structure", {}),
         "repair_attempts": state.get("repair_attempts", []),
         "final_code": state.get("repaired_code") or state.get("project_files", {}),

@@ -5,7 +5,7 @@ import { useAuth } from "../context/AuthContext";
 import { AuthPage, type AuthFormValues, type AuthMode } from "./AuthPage";
 
 export function LoginRoute() {
-  const { isAuthenticated, login } = useAuth();
+  const { isAuthenticated, login, loginAsLocalDemo } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [error, setError] = useState<string | null>(() => ((location.state as { expired?: boolean } | null)?.expired ? "Session expired. Sign in again to continue." : null));
@@ -13,6 +13,7 @@ export function LoginRoute() {
   const [mode, setMode] = useState<AuthMode>("signin");
   const [busy, setBusy] = useState(false);
   const destination = (location.state as { from?: string } | null)?.from ?? "/";
+  const localDemoEnabled = import.meta.env.VITE_LOCAL_DEMO_AUTH === "true";
 
   if (isAuthenticated) return <Navigate to="/" replace />;
 
@@ -46,15 +47,28 @@ export function LoginRoute() {
         navigate(destination, { replace: true });
       })
       .catch((cause: unknown) => {
-        const message = cause instanceof ApiError ? cause.message : "Sign in failed. Please check your credentials and try again.";
-        setError(message);
+        if (cause instanceof ApiError && cause.status === 404) {
+          setError("Email and password sign-in are not connected yet. Use local demo access, or configure an authentication provider.");
+          return;
+        }
+        setError(cause instanceof ApiError ? cause.message : "Sign in failed. Please check your credentials and try again.");
       })
       .finally(() => setBusy(false));
   }
 
+  function handleLocalDemo(): void {
+    loginAsLocalDemo();
+    navigate(destination, { replace: true });
+  }
+
+  function handleGoogleSignIn(): void {
+    setMessage("");
+    setError("Google sign-in is not configured yet. Connect an OAuth provider and backend callback before using this option.");
+  }
+
   return (
     <>
-      <AuthPage mode={mode} mockMode={mocksEnabled()} busy={busy} message={message} error={error ?? undefined} onModeChange={handleModeChange} onSubmit={handleSubmit} />
+      <AuthPage mode={mode} mockMode={mocksEnabled()} localDemoEnabled={localDemoEnabled} busy={busy} message={message} error={error ?? undefined} onModeChange={handleModeChange} onSubmit={handleSubmit} onLocalDemo={handleLocalDemo} onGoogleSignIn={handleGoogleSignIn} />
       {(error || busy || mocksEnabled()) && <div className="auth-feedback" aria-live="polite">
         {busy && <p>Signing in…</p>}
         {mocksEnabled() && <p>Mock mode is enabled. Sign-in creates a local demo session, not a real authenticated account.</p>}

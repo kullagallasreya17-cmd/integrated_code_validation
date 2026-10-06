@@ -1,13 +1,13 @@
 import { FileUpload } from "../components/FileUpload";
 import { useEffect, useState } from "react";
 import { CodeEditor } from "../components/CodeEditor";
-import type { ProjectFile, QualityTool, RunHistoryEntry } from "../types/finding";
+import type { ProjectFile, QualityTool, RunHistoryEntry, SecurityTool } from "../types/finding";
 import { ConfigurationPanel } from "../components/ConfigurationPanel";
-import { DEFAULT_ANALYSIS_CONFIGURATION, validateAnalysisConfiguration, type AnalysisConfiguration } from "../api/configuration";
+import { DEFAULT_ANALYSIS_CHECKS, DEFAULT_ANALYSIS_CONFIGURATION, validateAnalysisConfiguration, type AnalysisCheckOptions, type AnalysisConfiguration } from "../api/configuration";
 import { validatePythonPath } from "../api/files";
 
 interface UploadPageProps {
-  onStart: (files: ProjectFile[], tools: QualityTool[], securityTools?: never[], projectName?: string, configuration?: AnalysisConfiguration, existingProjectId?: string) => Promise<void>;
+  onStart: (files: ProjectFile[], tools: QualityTool[], securityTools?: SecurityTool[], projectName?: string, configuration?: AnalysisConfiguration, existingProjectId?: string, checks?: AnalysisCheckOptions) => Promise<void>;
   history: RunHistoryEntry[];
   onOpenHistory: (entry: RunHistoryEntry) => void;
   initialFiles?: ProjectFile[];
@@ -18,24 +18,43 @@ interface UploadPageProps {
 }
 
 const TOOL_OPTIONS: QualityTool[] = ["ruff", "pylint", "radon"];
-const TOOL_ICON: Record<QualityTool, string> = { ruff: "R", pylint: "P", radon: "C" };
+const SECURITY_TOOLS: SecurityTool[] = ["semgrep", "bandit", "gitleaks"];
 const TOOL_DESCRIPTION: Record<QualityTool, string> = {
-  ruff: "Fast linting · Requested for this run",
-  pylint: "Code quality · Requested for this run",
-  radon: "Complexity · Requested for this run",
+  ruff: "Fast Python linting and style analysis",
+  pylint: "Python code quality and maintainability analysis",
+  radon: "Python complexity analysis",
 };
+
+const CHECK_OPTIONS: Array<{ key: keyof AnalysisCheckOptions; title: string; description: string }> = [
+  { key: "codeQuality", title: "Code Quality", description: "Check Python code quality and maintainability." },
+  { key: "security", title: "Security", description: "Detect potential security issues." },
+  { key: "bugResource", title: "Bug & Resource Analysis", description: "Detect potential bugs and resource problems." },
+  { key: "complexity", title: "Complexity Analysis", description: "Analyze code complexity and hotspots." },
+  { key: "automatedRepair", title: "Automated Repair", description: "Automatically generate and validate fixes for detected issues." },
+  { key: "finalValidation", title: "Final Validation", description: "Run validation after analysis and repair to confirm that code passes the configured checks." },
+];
 
 export function UploadPage({ onStart, history, onOpenHistory, initialFiles = [], initialProjectName, existingProjectId, projectLoadError, runInProgress = false }: Readonly<UploadPageProps>) {
   const [files, setFiles] = useState<ProjectFile[]>(initialFiles);
   const [projectName, setProjectName] = useState(initialProjectName ?? "Python project");
   const [analysisConfiguration, setAnalysisConfiguration] = useState(DEFAULT_ANALYSIS_CONFIGURATION);
+  const [checks, setChecks] = useState(DEFAULT_ANALYSIS_CHECKS);
+  const [preset, setPreset] = useState<"recommended" | "custom">("recommended");
   const [tools, setTools] = useState<QualityTool[]>(TOOL_OPTIONS);
-  const [language, setLanguage] = useState("python");
+  const [llmConnection, setLlmConnection] = useState<"unchecked" | "connected" | "unreachable">("unchecked");
   const [inputMode, setInputMode] = useState<"files" | "code">("files");
   const [code, setCode] = useState("def example(value):\n    return value\n");
   const [pastedFilename, setPastedFilename] = useState("pasted-code.py");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const activeChecks: AnalysisCheckOptions = {
+    ...checks,
+    codeQuality: checks.codeQuality && tools.some((tool) => tool === "ruff" || tool === "pylint"),
+    complexity: checks.complexity && tools.includes("radon"),
+  };
+  const selectedTools = tools.filter((tool) => tool === "radon" ? activeChecks.complexity : activeChecks.codeQuality);
+  const selectedSecurityTools = activeChecks.security ? SECURITY_TOOLS : [];
+  const anyCheckSelected = Object.values(activeChecks).some(Boolean);
   let validPastedPath = "";
   try {
     validPastedPath = validatePythonPath(pastedFilename);
@@ -57,7 +76,7 @@ export function UploadPage({ onStart, history, onOpenHistory, initialFiles = [],
     setSubmitting(true);
     setSubmitError("");
     try {
-      await onStart(inputMode === "code" ? [{ path: validPastedPath, content: code }] : files, tools, [], projectName.trim(), analysisConfiguration, existingProjectId);
+      await onStart(inputMode === "code" ? [{ path: validPastedPath, content: code }] : files, selectedTools, selectedSecurityTools, projectName.trim(), analysisConfiguration, existingProjectId, activeChecks);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Validation could not be started.");
     } finally {
@@ -65,13 +84,34 @@ export function UploadPage({ onStart, history, onOpenHistory, initialFiles = [],
     }
   }
 
+  function setCheck<K extends keyof AnalysisCheckOptions>(key: K, value: AnalysisCheckOptions[K]) {
+    setPreset("custom");
+    setChecks((current) => ({ ...current, [key]: value }));
+    if (key === "complexity" && value) setTools((current) => current.includes("radon") ? current : [...current, "radon"]);
+    if (key === "codeQuality" && value) setTools((current) => current.some((tool) => tool === "ruff" || tool === "pylint") ? current : [...current, "ruff"]);
+  }
+
+  function setTool(tool: QualityTool, selected: boolean) {
+    setPreset("custom");
+    const nextTools = selected ? [...new Set([...tools, tool])] : tools.filter((item) => item !== tool);
+    setTools(nextTools);
+    if (tool === "radon") setChecks((current) => ({ ...current, complexity: selected }));
+    if (tool === "ruff" || tool === "pylint") setChecks((current) => ({ ...current, codeQuality: nextTools.some((item) => item === "ruff" || item === "pylint") }));
+  }
+
+  function useRecommendedPreset() {
+    setChecks(DEFAULT_ANALYSIS_CHECKS);
+    setTools(TOOL_OPTIONS);
+    setPreset("recommended");
+  }
+
   return (
     <section className="page page--upload">
       <div className="page-heading">
         <div>
-          <div className="kicker">Analysis workspace <span>01 / 04</span></div>
-          <h1>Analyze.<br /><em>Repair. Validate.</em></h1>
-          <p>AI-powered code analysis with multi-agent validation and automated repair evidence for every change.</p>
+          <div className="kicker">New analysis <span>01 / 04</span></div>
+          <h1>Choose checks.<br /><em>Start validation.</em></h1>
+          <p>Select the checks and quality tools for this Python project.</p>
         </div>
         <div className="heading-stamp"><span>PY</span><strong>Python<br />analysis</strong></div>
       </div>
@@ -80,10 +120,8 @@ export function UploadPage({ onStart, history, onOpenHistory, initialFiles = [],
         <button type="button" aria-pressed={inputMode === "files"} className={inputMode === "files" ? "input-tab input-tab--active" : "input-tab"} onClick={() => setInputMode("files")}>Project files <small>UPLOAD</small></button>
         <button type="button" aria-pressed={inputMode === "code"} className={inputMode === "code" ? "input-tab input-tab--active" : "input-tab"} onClick={() => setInputMode("code")}>Quick code <small>PASTE</small></button>
       </fieldset>
-      <p className="python-only-notice">Python projects only. Non-Python source files are rejected before analysis.</p>
-      <label className="project-name-field">Project name<input value={projectName} maxLength={120} readOnly={Boolean(existingProjectId)} onChange={(event) => setProjectName(event.target.value)} /></label>
+      <div className="project-input-meta"><label className="project-name-field">Project name<input value={projectName} maxLength={120} readOnly={Boolean(existingProjectId)} onChange={(event) => setProjectName(event.target.value)} /></label></div>
       {projectLoadError && <p className="inline-error" role="alert">{projectLoadError}</p>}
-      <div className="language-row"><label htmlFor="language">Language</label><select id="language" value={language} onChange={(event) => setLanguage(event.target.value)}><option value="python">Python</option></select><span>Initial language support</span></div>
       {inputMode === "files" ? <FileUpload onFilesReady={setFiles} /> : (
         <div className="code-entry">
           <div className="code-entry__bar"><span className="window-dots"><i /><i /><i /></span><label className="code-entry__filename">Filename<input aria-label="Filename for pasted Python code" value={pastedFilename} maxLength={180} onChange={(event) => setPastedFilename(event.target.value)} /></label><span className="code-entry__meta">Python 3.11</span></div>
@@ -92,34 +130,43 @@ export function UploadPage({ onStart, history, onOpenHistory, initialFiles = [],
         </div>
       )}
 
-      <fieldset className="tool-settings">
-        <legend>Quality checks <span>Choose the evidence sources for this run</span></legend>
-        {TOOL_OPTIONS.map((tool) => (
-          <label key={tool} className={tools.includes(tool) ? "tool-card tool-card--selected" : "tool-card"}>
-            <input
-              type="checkbox"
-              checked={tools.includes(tool)}
-              onChange={() =>
-                setTools((selected) =>
-                  selected.includes(tool) ? selected.filter((item) => item !== tool) : [...selected, tool]
-                )
-              }
-            />
-            <span className="tool-card__icon">{TOOL_ICON[tool]}</span>
-            <span><strong>{tool}</strong><small>{TOOL_DESCRIPTION[tool]}</small></span>
-            <b>{tools.includes(tool) ? "✓" : ""}</b>
-          </label>
-        ))}
-      </fieldset>
+      <section className="analysis-checks" aria-labelledby="analysis-checks-title">
+        <div className="analysis-config-heading"><div><p className="kicker">MAIN CONFIGURATION</p><h2 id="analysis-checks-title">Analysis Checks</h2><p>What would you like to validate?</p></div><div className="analysis-presets" role="group" aria-label="Analysis preset"><button type="button" className={preset === "recommended" ? "analysis-preset analysis-preset--active" : "analysis-preset"} onClick={useRecommendedPreset}>Recommended</button><button type="button" className={preset === "custom" ? "analysis-preset analysis-preset--active" : "analysis-preset"} onClick={() => setPreset("custom")}>Custom</button></div></div>
+        <div className="analysis-check-grid">{CHECK_OPTIONS.map(({ key, title, description }) => <label className={`analysis-check-card${checks[key] ? " analysis-check-card--selected" : ""}`} key={key}><input type="checkbox" checked={checks[key]} onChange={(event) => setCheck(key, event.target.checked)} /><span className="analysis-check-card__mark" aria-hidden="true">{checks[key] ? "✓" : ""}</span><span><strong>{title}</strong><small>{description}</small></span></label>)}</div>
+        {checks.codeQuality && !activeChecks.codeQuality && <p className="inline-error" role="status">Select Ruff or Pylint to run Code Quality analysis.</p>}
+        {checks.complexity && !activeChecks.complexity && <p className="inline-error" role="status">Select Radon to run Complexity Analysis.</p>}
+      </section>
 
-      <ConfigurationPanel mode="analysis" onChange={setAnalysisConfiguration} />
+      <section className="code-quality-tools" aria-labelledby="quality-tools-title">
+        <div className="analysis-config-heading"><div><p className="kicker">QUALITY EVIDENCE</p><h2 id="quality-tools-title">Code Quality Tools</h2><p>Choose which tools support the selected checks. Complexity analysis requires Radon.</p></div></div>
+        <div className="quality-tool-grid">{TOOL_OPTIONS.map((tool) => { const configured = selectedTools.includes(tool); return <label key={tool} className={tools.includes(tool) ? "quality-tool-card quality-tool-card--selected" : "quality-tool-card"}><input type="checkbox" checked={tools.includes(tool)} onChange={(event) => setTool(tool, event.target.checked)} /><span className="quality-tool-card__mark" aria-hidden="true">{tools.includes(tool) ? "✓" : ""}</span><span><strong>{tool[0].toUpperCase() + tool.slice(1)}</strong><small>{TOOL_DESCRIPTION[tool]}</small></span><b>{configured ? "Configured" : tools.includes(tool) ? "Disabled by check" : "Not selected"}</b></label>; })}</div>
+      </section>
+
+      <details className="advanced-settings">
+        <summary>Advanced Settings</summary>
+        <ConfigurationPanel mode="analysis" onChange={setAnalysisConfiguration} onConnectionStatusChange={setLlmConnection} />
+      </details>
+      {llmConnection === "unreachable" && activeChecks.automatedRepair && <p className="configuration-warning" role="status">The AI connection test failed. Automated Repair may be unavailable with this model; selected analysis checks can still be submitted.</p>}
+
+      <section className="validation-summary" aria-label="Validation summary">
+        <div><p className="kicker">READY TO RUN</p><h2>Validation Summary</h2></div>
+        <div><span>Checks</span><p>{[
+          activeChecks.codeQuality ? "Code Quality" : undefined,
+          activeChecks.security ? "Security" : undefined,
+          activeChecks.bugResource ? "Bugs & Resources" : undefined,
+          activeChecks.complexity ? "Complexity" : undefined,
+          activeChecks.automatedRepair ? "Repair" : undefined,
+          activeChecks.finalValidation ? "Validation" : undefined,
+        ].filter(Boolean).join(" · ") || "No checks selected"}</p></div>
+        <div><span>Tools</span><p>{selectedTools.map((tool) => tool[0].toUpperCase() + tool.slice(1)).join(" · ") || "None selected"}</p></div>
+      </section>
 
       <button
         className="btn btn--primary"
-        disabled={submitting || runInProgress || (inputMode === "files" && files.length === 0) || (inputMode === "code" && (!code.trim() || !validPastedPath)) || tools.length === 0 || language !== "python" || !projectName.trim() || !validateAnalysisConfiguration(analysisConfiguration) || Boolean(projectLoadError)}
+        disabled={submitting || runInProgress || (inputMode === "files" && files.length === 0) || (inputMode === "code" && (!code.trim() || !validPastedPath)) || !anyCheckSelected || (checks.codeQuality && !activeChecks.codeQuality) || (checks.complexity && !activeChecks.complexity) || !projectName.trim() || !validateAnalysisConfiguration(analysisConfiguration) || Boolean(projectLoadError)}
         onClick={() => void start()}
       >
-        {submitting ? "Validation running..." : "Start validation"} {!submitting && <span>→</span>}
+        {submitting ? "Validation running..." : "Start Validation"} {!submitting && <span>→</span>}
       </button>
       {(submitting || runInProgress) && <p className="analysis-pulse" role="status" aria-live="polite">Sending code to the orchestrator and waiting for validation results...</p>}
       {submitError && <p className="inline-error" role="alert">{submitError}</p>}

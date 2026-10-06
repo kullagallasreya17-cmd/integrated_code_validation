@@ -69,6 +69,95 @@ def test_workflow_runs_end_to_end_with_downstream_boundaries(monkeypatch):
     assert ("compare", "completed") in stage_events
 
 
+def test_analysis_checks_skip_unselected_agents_repair_and_validation(monkeypatch):
+    from app.services import bug_resource_client, quality_client, repair_client, sandbox_client, security_client, validation_client
+
+    calls = []
+
+    async def quality_only(project_id, files, context, tools):
+        calls.append(("quality", tools))
+        return {"findings": [], "quality_summary": {"tool_runs": [{"tool": "radon", "status": "completed", "finding_count": 0}]}}
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("a disabled agent or stage must not run")
+
+    monkeypatch.setattr(quality_client, "analyze", quality_only)
+    monkeypatch.setattr(security_client, "analyze", unexpected)
+    monkeypatch.setattr(bug_resource_client, "analyze", unexpected)
+    monkeypatch.setattr(repair_client, "repair", unexpected)
+    monkeypatch.setattr(sandbox_client, "execute", unexpected)
+    monkeypatch.setattr(validation_client, "validate", unexpected)
+
+    checks = {
+        "code_quality": False,
+        "security": False,
+        "bug_resource": False,
+        "complexity": True,
+        "automated_repair": False,
+        "final_validation": False,
+    }
+    result = asyncio.run(build_workflow().ainvoke({
+        "project_id": "proj-custom-checks",
+        "project_files": {"app.py": "print('hi')\n"},
+        "project_context": {"analysis_checks": checks},
+        "tools": ["radon"],
+    }))
+
+    assert calls == [("quality", ["radon"])]
+    stage_statuses = {stage["stage"]: stage["status"] for stage in result["stage_history"]}
+    assert stage_statuses["repair"] == "skipped"
+    assert stage_statuses["validate"] == "skipped"
+    assert stage_statuses["reanalyze"] == "skipped"
+    assert stage_statuses["compare"] == "skipped"
+    assert result["final_report"]["analysis_checks"] == checks
+    assert result["validation_status"] == "pending"
+
+
+def test_final_validation_can_run_without_automated_repair(monkeypatch):
+    from app.services import bug_resource_client, quality_client, repair_client, sandbox_client, security_client, validation_client
+
+    async def unexpected_analysis(*args, **kwargs):
+        raise AssertionError("analysis agents were disabled")
+
+    async def unexpected_repair(*args, **kwargs):
+        raise AssertionError("automated repair was disabled")
+
+    async def sandbox_pass(project_id, files):
+        assert files == {"app.py": "print('hi')\n"}
+        return {"executed": True, "exit_code": 0}
+
+    async def validation_pass(project_id, files, findings):
+        assert files == {"app.py": "print('hi')\n"}
+        return {"passed": True, "tests": {"passed": 1}}
+
+    monkeypatch.setattr(quality_client, "analyze", unexpected_analysis)
+    monkeypatch.setattr(security_client, "analyze", unexpected_analysis)
+    monkeypatch.setattr(bug_resource_client, "analyze", unexpected_analysis)
+    monkeypatch.setattr(repair_client, "repair", unexpected_repair)
+    monkeypatch.setattr(sandbox_client, "execute", sandbox_pass)
+    monkeypatch.setattr(validation_client, "validate", validation_pass)
+
+    result = asyncio.run(build_workflow().ainvoke({
+        "project_id": "proj-final-validation-only",
+        "project_files": {"app.py": "print('hi')\n"},
+        "project_context": {"analysis_checks": {
+            "code_quality": False,
+            "security": False,
+            "bug_resource": False,
+            "complexity": False,
+            "automated_repair": False,
+            "final_validation": True,
+        }},
+        "tools": [],
+    }))
+
+    stage_statuses = {stage["stage"]: stage["status"] for stage in result["stage_history"]}
+    assert stage_statuses["repair"] == "skipped"
+    assert stage_statuses["validate"] == "passed"
+    assert stage_statuses["reanalyze"] == "skipped"
+    assert result["validation_status"] == "passed"
+
+
 def test_start_request_rejects_invalid_project_files():
     with pytest.raises(ValueError):
         StartAnalysisRequest(project_id="", files=[])

@@ -8,6 +8,7 @@ interface AuthContextValue {
   readonly user: AuthSession["user"] | null;
   readonly isAuthenticated: boolean;
   readonly login: (email: string, password: string, remember: boolean) => Promise<void>;
+  readonly loginAsLocalDemo: () => void;
   readonly logout: () => void;
 }
 
@@ -26,6 +27,17 @@ export function AuthProvider({ children }: Readonly<AuthProviderProps>) {
     const validRoles: readonly Role[] = ["Developer", "Reviewer", "Technical Lead", "Administrator"];
     if (!validRoles.includes(nextSession.user.role)) throw new Error("The account role is not recognized.");
     saveSession(nextSession, remember);
+    setSession(nextSession);
+  }, []);
+
+  const loginAsLocalDemo = useCallback(() => {
+    const id = crypto.randomUUID();
+    const nextSession: AuthSession = {
+      access_token: `local-demo-${id}`,
+      token_type: "Bearer",
+      user: { id, email: "demo@local.invalid", full_name: "Local demo", role: "Developer" },
+    };
+    saveSession(nextSession, false);
     setSession(nextSession);
   }, []);
 
@@ -63,7 +75,7 @@ export function AuthProvider({ children }: Readonly<AuthProviderProps>) {
     };
   }, [session, logout]);
 
-  const value = useMemo<AuthContextValue>(() => ({ session, user: session?.user ?? null, isAuthenticated: Boolean(session), login, logout }), [session, login, logout]);
+  const value = useMemo<AuthContextValue>(() => ({ session, user: session?.user ?? null, isAuthenticated: Boolean(session), login, loginAsLocalDemo, logout }), [session, login, loginAsLocalDemo, logout]);
   return <AuthContext.Provider value={value}>{children}{idleWarning && <dialog open className="idle-warning" aria-labelledby="idle-warning-title"><h2 id="idle-warning-title">Session ending soon</h2><p>You will be signed out in one minute because of inactivity.</p><button className="btn btn--primary" onClick={() => setIdleWarning(false)}>Stay signed in</button><button className="btn" onClick={logout}>Log out</button></dialog>}</AuthContext.Provider>;
 }
 

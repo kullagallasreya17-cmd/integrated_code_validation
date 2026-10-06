@@ -27,6 +27,16 @@ export type ValidationStatus = "pending" | "passed" | "failed" | "unknown";
 
 export interface FinalReport {
   project_id: string;
+  analysis_id?: string;
+  workflow_status?: string;
+  analysis_checks?: {
+    readonly code_quality?: boolean;
+    readonly security?: boolean;
+    readonly bug_resource?: boolean;
+    readonly complexity?: boolean;
+    readonly automated_repair?: boolean;
+    readonly final_validation?: boolean;
+  };
   validation_status: ValidationStatus;
   retry_count: number;
   max_retries: number;
@@ -36,6 +46,12 @@ export interface FinalReport {
   };
   validation_results: Record<string, unknown>;
   agent_errors?: Array<{ agent: string; error: string }>;
+  findings?: Finding[];
+  prioritized_findings?: Finding[];
+  security_findings?: Finding[];
+  resource_findings?: Finding[];
+  recommendations?: string[];
+  explanations?: Array<Record<string, unknown>>;
   repair_attempts?: Array<Record<string, unknown>>;
   stage_history?: Array<Record<string, unknown>>;
   sandbox_result?: Record<string, unknown>;
@@ -45,12 +61,16 @@ export interface FinalReport {
   workflow_summary?: WorkflowSummary;
   workflow_trace?: string[];
   comparison?: {
-    findings_before: number;
-    findings_after: number;
-    resolved_issues: string[];
-    remaining_issues: string[];
-    changed_files: string[];
-    improved: boolean;
+    findings_before?: number;
+    findings_after?: number;
+    resolved_issues?: string[];
+    remaining_issues?: string[];
+    changed_files?: string[];
+    improved?: boolean;
+    quality_score_before?: number;
+    quality_score_after?: number;
+    findings_by_severity_before?: Record<string, number>;
+    findings_by_severity_after?: Record<string, number>;
   };
 }
 
@@ -74,7 +94,7 @@ export interface QualitySummary {
   tool_runs?: Array<{ tool: string; agent?: string; status: string; finding_count: number; duration_ms?: number; exit_code?: number | null; error?: string; raw_output?: string; available?: boolean }>;
   tool_results?: Record<string, { status?: string; duration_ms?: number; exit_code?: number | null; error?: string; raw_output?: string; available?: boolean; agent?: string; finding_count?: number }>;
   hotspots?: Array<{ function_name: string; file: string | null; line: number | null; complexity: number; risk_level: string }>;
-  per_file?: Record<string, { errors: number; warnings: number; complexity: string; issues: number }>;
+  per_file?: Record<string, { errors: number; warnings: number; complexity: string; issues: number; quality_score?: number; status?: string }>;
 }
 
 export interface WorkflowSummary {
@@ -91,6 +111,24 @@ export interface WorkflowSummary {
 
 export interface WorkflowRunResponse {
   run_id?: string;
+  analysis_id?: string;
+  project_name?: string;
+  project_files?: ProjectFile[];
+  findings_reported?: boolean;
+  quality_summary?: QualitySummary;
+  quality_findings?: Finding[];
+  security_findings?: Finding[];
+  security_tool_runs?: Array<Record<string, unknown>>;
+  resource_findings?: Finding[];
+  prioritized_findings?: Finding[];
+  agent_errors?: Array<{ agent: string; error: string }>;
+  stage_history?: Array<Record<string, unknown>>;
+  repair_attempts?: Array<Record<string, unknown>>;
+  validation_results?: Record<string, unknown>;
+  sandbox_result?: Record<string, unknown>;
+  reanalysis_findings?: Finding[];
+  reanalysis_summary?: QualitySummary;
+  comparison?: FinalReport["comparison"];
   analysis_configuration?: {
     readonly sandbox_timeout_seconds: number;
     readonly memory_limit_mb: number;
