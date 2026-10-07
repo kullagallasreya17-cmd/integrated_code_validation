@@ -54,6 +54,7 @@ function severityCounts(findings: Finding[]): Record<Severity, number> {
 function validationLabel(status: string): string {
   if (status === "passed") return "PASSED";
   if (status === "failed") return "FAILED";
+  if (status === "not_run") return "NOT RUN";
   if (status === "pending" || status === "in_progress") return "IN PROGRESS";
   return "NOT AVAILABLE";
 }
@@ -124,7 +125,10 @@ export function AnalysisReport({ result, sourceFiles, completedAt, onViewFile }:
   const comparison = recordOf(result.comparison ?? report.comparison);
   const reanalysisSummary = result.reanalysis_summary ?? report.reanalysis_summary;
   const agentErrors = toList(result.agent_errors) ?? toList(report.agent_errors) ?? [];
-  const validationStatus = result.validation_status ?? report.validation_status;
+  const reportedValidationStatus = result.validation_status ?? report.validation_status;
+  const validationStatus = reportedValidationStatus === "pending" && report.analysis_checks?.final_validation === false
+    ? "not_run"
+    : reportedValidationStatus;
   const qualityScore = numberOf(quality?.quality_score) ?? numberOf(quality?.quality_gate?.overall_score);
   const criticalOrHigh = (counts.critical ?? 0) + (counts.high ?? 0);
   const qualityToolRuns = quality?.tool_runs ?? [];
@@ -186,6 +190,8 @@ export function AnalysisReport({ result, sourceFiles, completedAt, onViewFile }:
         : "The workflow reported a failed validation. No specific validation error was returned.";
   } else if (validationStatus === "pending") {
     explanation = "This workflow is still in progress; a final validation decision has not been returned.";
+  } else if (validationStatus === "not_run") {
+    explanation = "Final validation was not run for this analysis. Review the available analyzer results.";
   }
 
   function toolResult(tool: string) {
@@ -228,7 +234,7 @@ export function AnalysisReport({ result, sourceFiles, completedAt, onViewFile }:
       </section>
 
       <section className={`report-section report-explanation report-explanation--${validationClass(validationStatus)}`} aria-labelledby="report-explanation-heading">
-        <div className="report-section-heading"><div><p className="report-eyebrow">02 · VALIDATION RESULT</p><h2 id="report-explanation-heading">Why did validation {validationStatus === "passed" ? "pass" : validationStatus === "failed" ? "fail" : "stop"}?</h2></div></div>
+        <div className="report-section-heading"><div><p className="report-eyebrow">02 · VALIDATION RESULT</p><h2 id="report-explanation-heading">{validationStatus === "not_run" ? "Validation not run" : `Why did validation ${validationStatus === "passed" ? "pass" : validationStatus === "failed" ? "fail" : "stop"}?`}</h2></div></div>
         <p className="report-explanation__lead">{explanation}</p>
         <div className="report-explanation__facts">
           <p><strong>Critical/high-risk findings:</strong> {hasFindingData ? `${criticalOrHigh} returned` : "Not available"}</p>
@@ -354,6 +360,7 @@ function ComparisonColumn({ title, qualityScore, findingCount, severity }: Reado
 }
 
 function nextStep(status: string, reasons: string[], recommendations: string[], findings: Finding[]): string {
+  if (status === "not_run") return "Review the available analysis results; final validation was not run.";
   if (status === "failed" && reasons.length > 0) return "Resolve the reported workflow or validation issue, then run validation again.";
   if (recommendations.length > 0) return safeEvidence(recommendations[0]);
   if (findings.length > 0) return "Review the finding details and suggested actions, then rerun validation after changes.";

@@ -1,6 +1,20 @@
 services:
   # ---- Sreya's services (active) ----
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coding_validation}
+      POSTGRES_USER: ${POSTGRES_USER:-coding_validation}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or the environment}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   gateway:
     build:
       context: .
@@ -9,8 +23,12 @@ services:
       - "${GATEWAY_PORT:-8000}:8000"
     environment:
       - GATEWAY_ORCHESTRATOR_URL=http://orchestrator:8000
+      - GATEWAY_DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-coding_validation}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or the environment}@postgres:5432/${POSTGRES_DB:-coding_validation}
     depends_on:
-      - orchestrator
+      orchestrator:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -68,6 +86,7 @@ services:
 
 volumes:
   orchestrator-data:
+  postgres-data:
 
   # ---- Rakshitha's services (Fix & Regeneration, Security, DB & Reports) ----
   # Uncomment once services/security-service, services/repair-service, and

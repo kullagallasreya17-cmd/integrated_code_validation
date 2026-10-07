@@ -14,11 +14,11 @@ export interface AnalysisCheckOptions {
 
 export const DEFAULT_ANALYSIS_CHECKS: AnalysisCheckOptions = {
   codeQuality: true,
-  security: true,
-  bugResource: true,
+  security: false,
+  bugResource: false,
   complexity: true,
-  automatedRepair: true,
-  finalValidation: true,
+  automatedRepair: false,
+  finalValidation: false,
 };
 
 export interface AnalysisConfiguration {

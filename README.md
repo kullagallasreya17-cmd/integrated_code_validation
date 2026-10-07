@@ -18,8 +18,8 @@ coding-validation-agent/
 ├── gateway/                     API entry point (FastAPI)
 ├── frontend/                     React + TypeScript + Vite UI
 ├── shared/schemas/                Common contracts (Finding, workflow, etc.)
-└── docker-compose.yml             Runs the 3 services above; teammates'
-                                    services are stubbed in as comments
+└── docker-compose.yml             Runs frontend, Gateway, PostgreSQL,
+                                    Orchestrator, and Code Quality
 ```
 
 ## Running it locally
@@ -27,13 +27,21 @@ coding-validation-agent/
 ### Option A — Docker Compose (recommended)
 
 ```bash
-docker compose up --build
+cp .env.example .env
+# Replace POSTGRES_PASSWORD with a strong URL-safe password in .env.
+docker compose up --build -d
 ```
 
 - Frontend: http://localhost:5174
 - Gateway: http://localhost:8000 (docs at /docs)
 - Orchestrator: http://localhost:8001 (internal gateway target)
 - Code quality service: http://localhost:8002 (docs at /docs)
+- PostgreSQL: internal Compose service; data persists in `postgres-data`
+
+The Gateway creates the initial SQLAlchemy schema at startup. Compose supplies
+`GATEWAY_DATABASE_URL` using `POSTGRES_DB`, `POSTGRES_USER`, and
+`POSTGRES_PASSWORD`. Do not commit `.env`. The current schema bootstrap uses
+`create_all`; versioned Alembic migrations are not yet configured.
 
 The code-quality service accepts `POST /analyze` with a `project_id`, relative
 Python `.py` files, and an optional subset of `ruff`, `pylint`, and `radon`.
@@ -59,7 +67,8 @@ ORCH_QUALITY_SERVICE_URL=http://localhost:8002 PYTHONPATH=../.. \
 # Gateway (in a third terminal)
 cd gateway
 pip install -r requirements.txt
-GATEWAY_ORCHESTRATOR_URL=http://localhost:8001 PYTHONPATH=.. \
+GATEWAY_ORCHESTRATOR_URL=http://localhost:8001 \
+GATEWAY_DATABASE_URL=sqlite+aiosqlite:///./gateway.db PYTHONPATH=.. \
    uvicorn app.main:app --reload --port 8000
 
 # Frontend (in a fourth terminal)
@@ -77,6 +86,7 @@ service folder) is needed because both services import
 ```bash
 cd services/code-quality-service && PYTHONPATH=../.. pytest
 cd services/orchestrator-service && PYTHONPATH=../.. pytest
+cd gateway && PYTHONPATH=.. pytest
 ```
 
 ## Code map and useful commands
@@ -313,20 +323,21 @@ independent of the orchestrator.
 
 Implemented in this repository: React/Monaco intake and review, Code Quality
 Agent, AST-based Code Analysis, LangGraph coordination, shared finding
-aggregation, bounded repair/validation routing, sandbox-gated validation,
-stage/error history, repair-attempt records, report generation, status/SSE
-progress, findings/report retrieval, structured workflow logging, and durable
-local run history.
+aggregation, bounded repair/validation routing, stage/error history,
+repair-attempt records, report generation, status/SSE progress, and Gateway
+PostgreSQL persistence for projects, source files, analysis runs, findings,
+tool results, workflow events, repairs, validation results, and reports. The
+Orchestrator retains its JSON run store as an internal fallback.
 
 The Security, Bug & Resource, Fix & Regeneration, Docker Sandbox, and
 Validation services are represented by HTTP adapters because their teammate
 services are not present in this repository. The orchestrator will preserve
 their failure evidence and will never mark a run passed when sandbox or
-validation evidence is unavailable. PostgreSQL is also not present in the
-current tree; `ORCH_RUN_STORE_PATH` provides a durable JSON fallback with the
-same run-history boundary until a PostgreSQL service and credentials are
-added. No LLM provider is configured, so explanations and repairs remain
-downstream integration points rather than being fabricated locally.
+validation evidence is unavailable. PostgreSQL now backs Gateway project and
+run data, but versioned schema migrations, authentication/authorization, and
+ownership enforcement remain future work. No LLM provider is configured, so
+LLM-based explanations and repairs remain downstream integration points rather
+than being fabricated locally.
 
 ## How this integrates with Rakshitha and Shifa's work
 

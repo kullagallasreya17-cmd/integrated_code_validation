@@ -25,7 +25,7 @@ interface WorkflowStreamSnapshot {
 
 function workflowStatusMessage(status: string, step: string): string {
   if (status === "failed") return "The orchestrator reported a failed workflow.";
-  if (status === "completed") return "The orchestrator completed validation.";
+  if (status === "completed") return "The orchestrator completed the workflow.";
   return `Workflow ${status}: ${step}`;
 }
 

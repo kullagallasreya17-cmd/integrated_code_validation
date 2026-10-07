@@ -71,7 +71,7 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
       }
 
       setFiles(uniqueFiles);
-      onFilesReady(uniqueFiles);
+      onFilesReady(uniqueFiles.map(({ path, content }) => ({ path, content })));
     } catch {
       setError("Input could not be read. Use relative .py paths only; absolute paths and '..' segments are rejected.");
     } finally {
@@ -84,7 +84,7 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
   function removeFile(path: string) {
     const remaining = files.filter((file) => file.path !== path);
     setFiles(remaining);
-    onFilesReady(remaining);
+    onFilesReady(remaining.map(({ path, content }) => ({ path, content })));
   }
 
   const totalSize = files.reduce((sum, file) => sum + file.sizeBytes, 0);

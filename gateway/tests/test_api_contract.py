@@ -1,7 +1,14 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.routes import analysis
+
+
+@pytest.fixture
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 class FakeResponse:
@@ -36,12 +43,19 @@ class FakeAsyncClient:
         return FakeResponse({"status": "submitted", "project_id": json["project_id"]})
 
     async def get(self, url):
-        return FakeResponse({"project_id": "project", "status": "completed", "result": {"findings": []}})
+        return FakeResponse({
+            "project_id": "project",
+            "status": "completed",
+            "result": {
+                "findings": [],
+                "validation_status": "pending",
+                "final_report": {"project_id": "project", "validation_status": "pending"},
+            },
+        })
 
 
-def test_project_and_analysis_contract(monkeypatch):
+def test_project_and_analysis_contract(monkeypatch, client):
     monkeypatch.setattr(analysis.httpx, "AsyncClient", FakeAsyncClient)
-    client = TestClient(app)
 
     project = client.post("/api/projects", json={
         "name": "demo",
@@ -60,9 +74,8 @@ def test_project_and_analysis_contract(monkeypatch):
     assert status.json()["status"] == "completed"
 
 
-def test_code_quality_adapter_forwards_to_service(monkeypatch):
+def test_code_quality_adapter_forwards_to_service(monkeypatch, client):
     monkeypatch.setattr(analysis.httpx, "AsyncClient", FakeAsyncClient)
-    client = TestClient(app)
 
     response = client.post("/api/agents/code-quality/analyze", json={
         "project_id": "quality-test",
@@ -72,3 +85,58 @@ def test_code_quality_adapter_forwards_to_service(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["agent"] == "code_quality"
+
+
+def test_project_files_and_management_routes_persist(client):
+    created = client.post("/api/projects", json={
+        "name": "persisted-demo",
+        "files": [{"path": "src/main.py", "content": "print('before')\n"}],
+    })
+    assert created.status_code == 200
+    project_id = created.json()["project_id"]
+
+    listed = client.get("/api/projects", params={"search": "persisted-demo"})
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["project_id"] == project_id
+
+    files = client.get("/api/files", params={"project_id": project_id})
+    assert files.json()["files"] == [{"path": "src/main.py", "content": "print('before')\n"}]
+
+    saved = client.post("/api/files", json={
+        "project_id": project_id,
+        "files": [{"path": "src/main.py", "content": "print('after')\n"}],
+    })
+    assert saved.status_code == 200
+    assert client.get("/api/files", params={"project_id": project_id}).json()["files"][0]["content"] == "print('after')\n"
+
+    updated = client.patch(f"/api/projects/{project_id}", json={"name": "renamed-demo"})
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "renamed-demo"
+
+    assert client.delete(f"/api/projects/{project_id}").status_code == 204
+    assert client.get(f"/api/projects/{project_id}").status_code == 404
+
+
+def test_analysis_run_is_persisted_with_restart_safe_run_id(monkeypatch, client):
+    monkeypatch.setattr(analysis.httpx, "AsyncClient", FakeAsyncClient)
+    project = client.post("/api/projects", json={
+        "name": "persisted-analysis",
+        "files": [{"path": "main.py", "content": "print('ok')\n"}],
+    }).json()
+
+    started = client.post("/analysis/run", json={
+        "project_id": project["project_id"],
+        "files": [{"path": "main.py", "content": "print('ok')\n"}],
+        "tools": ["ruff"],
+    })
+    assert started.status_code == 200
+    run_id = started.json()["run_id"]
+
+    status = client.get(f"/api/analysis/{run_id}/status")
+    assert status.status_code == 200
+    assert status.json()["run_id"] == run_id
+    assert status.json()["project_id"] == project["project_id"]
+
+    report = client.get(f"/results/{project['project_id']}")
+    assert report.status_code == 200
+    assert report.json()["report"]["validation_status"] == "pending"
