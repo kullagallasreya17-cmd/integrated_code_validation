@@ -61,6 +61,7 @@ export default function App() {
   const navigate = useNavigate();
   const [originalFiles, setOriginalFiles] = useState<ProjectFile[]>([]);
   const [result, setResult] = useState<WorkflowRunResponse | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [progressMessage, setProgressMessage] = useState<string>();
@@ -91,6 +92,7 @@ export default function App() {
       setHistory([]);
       setOriginalFiles([]);
       setResult(null);
+      setActiveProjectId(null);
       setErrorMessage(null);
       setActiveStepIndex(0);
       setProgressMessage(undefined);
@@ -137,7 +139,8 @@ export default function App() {
         automated_repair: checks.automatedRepair,
         final_validation: checks.finalValidation,
       };
-      const projectId = existingProjectId ?? (await createProject({ name: projectName, files, project_context: { analysis_checks: analysisChecks } })).project_id;
+      const projectId = existingProjectId ?? activeProjectId ?? (await createProject({ name: projectName, files, project_context: { analysis_checks: analysisChecks } })).project_id;
+      setActiveProjectId(projectId);
       navigate(`/analysis/${encodeURIComponent(projectId)}`);
       const response = await api.startAnalysis(
         { project_id: projectId, files, tools, project_context: { analysis_checks: analysisChecks } },
@@ -155,6 +158,7 @@ export default function App() {
       );
       const completedRun = { ...response, project_name: projectName };
       setResult(completedRun);
+      setActiveProjectId(response.project_id);
       setRetryCount(response.retry_count);
       setWorkflowStatus("completed");
       setWorkflowStep("finalize");
@@ -171,11 +175,12 @@ export default function App() {
       requestInFlight.current = false;
       setRunInProgress(false);
     }
-  }, [navigate]);
+  }, [activeProjectId, navigate]);
 
   const openHistory = useCallback((entry: RunHistoryEntry): void => {
     setOriginalFiles(entry.originalFiles);
     setResult(entry.result);
+    setActiveProjectId(entry.project_id);
     setErrorMessage(null);
     navigate(`/analysis/${encodeURIComponent(entry.project_id)}/results`);
   }, [navigate]);
@@ -183,9 +188,9 @@ export default function App() {
   const rerun = useCallback((): void => {
     if (originalFiles.length === 0) return;
     const previous = lastRunOptions.current;
-    if (previous) void handleStart(originalFiles, previous.tools, previous.projectName, undefined, previous.checks);
-    else void handleStart(originalFiles, ["ruff", "pylint", "radon"]);
-  }, [handleStart, originalFiles]);
+    if (previous) void handleStart(originalFiles, previous.tools, previous.projectName, activeProjectId ?? undefined, previous.checks);
+    else void handleStart(originalFiles, ["ruff", "pylint", "radon"], "Python project", activeProjectId ?? undefined);
+  }, [activeProjectId, handleStart, originalFiles]);
 
   const value = useMemo<WorkspaceState>(
     () => ({ history, result, originalFiles, activeStepIndex, progressMessage, workflowStep, workflowStatus, retryCount, runInProgress, activeTools, activeChecks, errorMessage, handleStart, openHistory, rerun }),
