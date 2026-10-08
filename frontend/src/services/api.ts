@@ -25,7 +25,7 @@ interface WorkflowStreamSnapshot {
 
 function workflowStatusMessage(status: string, step: string): string {
   if (status === "failed") return "The orchestrator reported a failed workflow.";
-  if (status === "completed") return "The orchestrator completed validation.";
+  if (status === "completed") return "The orchestrator completed the workflow.";
   return `Workflow ${status}: ${step}`;
 }
 
@@ -134,8 +134,8 @@ function firstRecord(...values: unknown[]): Record<string, unknown> | undefined 
   return values.find(isRecord);
 }
 
-function firstArray(...values: unknown[]): unknown[] {
-  return values.find(Array.isArray) as unknown[] | undefined ?? [];
+function optionalArray(...values: unknown[]): unknown[] | undefined {
+  return values.find(Array.isArray) as unknown[] | undefined;
 }
 
 function firstDefined(...values: unknown[]): unknown {
@@ -152,11 +152,32 @@ function toWorkflowRunResponse(value: unknown, projectId: string): WorkflowRunRe
   const nested = firstRecord(value.result);
   const reportCandidate = firstRecord(value.final_report, nested?.final_report);
   if (!reportCandidate) return null;
-  const findings = firstArray(value.findings, nested?.findings, reportCandidate.findings);
+  const reportedFindings = optionalArray(value.findings, nested?.findings, reportCandidate.findings);
+  const findings = reportedFindings ?? [];
   const validationStatus = normalizeValidationStatus(firstDefined(value.validation_status, nested?.validation_status, reportCandidate.validation_status));
   const retryCount = firstDefined(value.retry_count, nested?.retry_count, reportCandidate.retry_count);
+  const arrayValue = (key: string) => optionalArray(value[key], nested?.[key], reportCandidate[key]);
+  const recordValue = (key: string) => firstRecord(value[key], nested?.[key], reportCandidate[key]);
   return {
     run_id: typeof value.run_id === "string" ? value.run_id : undefined,
+    analysis_id: typeof value.analysis_id === "string" ? value.analysis_id : typeof reportCandidate.analysis_id === "string" ? reportCandidate.analysis_id : undefined,
+    project_name: typeof value.project_name === "string" ? value.project_name : undefined,
+    project_files: arrayValue("project_files") as ProjectFile[] | undefined,
+    findings_reported: reportedFindings !== undefined,
+    quality_summary: recordValue("quality_summary") as unknown as WorkflowRunResponse["quality_summary"],
+    quality_findings: arrayValue("quality_findings") as WorkflowRunResponse["quality_findings"],
+    security_findings: arrayValue("security_findings") as WorkflowRunResponse["security_findings"],
+    security_tool_runs: arrayValue("security_tool_runs") as WorkflowRunResponse["security_tool_runs"],
+    resource_findings: arrayValue("resource_findings") as WorkflowRunResponse["resource_findings"],
+    prioritized_findings: arrayValue("prioritized_findings") as WorkflowRunResponse["prioritized_findings"],
+    agent_errors: arrayValue("agent_errors") as WorkflowRunResponse["agent_errors"],
+    stage_history: arrayValue("stage_history") as WorkflowRunResponse["stage_history"],
+    repair_attempts: arrayValue("repair_attempts") as WorkflowRunResponse["repair_attempts"],
+    validation_results: recordValue("validation_results"),
+    sandbox_result: recordValue("sandbox_result"),
+    reanalysis_findings: arrayValue("reanalysis_findings") as WorkflowRunResponse["reanalysis_findings"],
+    reanalysis_summary: recordValue("reanalysis_summary") as unknown as WorkflowRunResponse["reanalysis_summary"],
+    comparison: recordValue("comparison") as unknown as WorkflowRunResponse["comparison"],
     project_id: typeof value.project_id === "string" ? value.project_id : projectId,
     validation_status: validationStatus,
     retry_count: typeof retryCount === "number" ? retryCount : 0,

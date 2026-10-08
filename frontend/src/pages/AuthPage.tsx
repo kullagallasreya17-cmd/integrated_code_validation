@@ -14,11 +14,14 @@ export type AuthFormValues = {
 interface AuthPageProps {
   readonly mode: AuthMode;
   readonly mockMode: boolean;
+  readonly localDemoEnabled: boolean;
   readonly busy: boolean;
   readonly message?: string;
   readonly error?: string;
   readonly onModeChange: (mode: AuthMode) => void;
   readonly onSubmit: (values: AuthFormValues, mode: AuthMode) => void;
+  readonly onLocalDemo: () => void;
+  readonly onGoogleSignIn: () => void;
 }
 
 function headingForMode(mode: AuthMode): string {
@@ -31,14 +34,15 @@ function headingForMode(mode: AuthMode): string {
   return headings[mode];
 }
 
-function introForMode(mode: AuthMode, mockMode: boolean): string {
+function introForMode(mode: AuthMode, mockMode: boolean, localDemoEnabled: boolean): string {
   if (mode === "forgot") return mockMode ? "Demo mode only. No reset email will be sent." : "Password reset is unavailable until the authentication service is connected.";
   if (mode === "reset") return mockMode ? "Demo mode only. The new password will not be saved." : "Password reset is unavailable until the authentication service is connected.";
   if (mode === "signup") return mockMode ? "Demo account only. No account will be registered." : "Registration is unavailable until the authentication service is connected.";
+  if (!mockMode && localDemoEnabled) return "Account sign-in is not configured in this deployment. Use local demo access to enter the workspace.";
   return "Sign in to your Code Validation Agent account";
 }
 
-export function AuthPage({ mode, mockMode, busy, message, error, onModeChange, onSubmit }: Readonly<AuthPageProps>) {
+export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, error, onModeChange, onSubmit, onLocalDemo, onGoogleSignIn }: Readonly<AuthPageProps>) {
   const isSignup = mode === "signup";
   const isRecovery = mode === "forgot" || mode === "reset";
   const [showPassword, setShowPassword] = useState(false);
@@ -105,15 +109,15 @@ export function AuthPage({ mode, mockMode, busy, message, error, onModeChange, o
 
       <div className="auth-reference-layout" id="home">
         <section className="auth-reference-hero">
-          <p className="reference-eyebrow">PYTHON ANALYSIS WORKSPACE</p>
-          <h1>Python code checks<br /><em>with reviewable evidence</em></h1>
-          <p className="auth-intro">Run static quality checks, follow the orchestrated workflow, and review findings from the services connected to this deployment.</p>
+          <p className="reference-eyebrow">AI-POWERED ENGINEERING WORKSPACE</p>
+          <h1>AI-Powered Code<br /><em>Validation &amp; Repair</em><br />for Safer, Cleaner Code</h1>
+          <p className="auth-intro">Analyze your Python code, detect issues, get intelligent fixes, and keep your projects secure, reliable, and maintainable, all in one place.</p>
 
           <ul className="feature-list">
-            <li><span className="feature-list__icon">01</span><span><strong>Static quality checks</strong><small>Ruff, Pylint, and Radon in one run.</small></span></li>
-            <li><span className="feature-list__icon">02</span><span><strong>Workflow visibility</strong><small>Follow orchestrator stages and outcomes.</small></span></li>
-            <li><span className="feature-list__icon">03</span><span><strong>Reviewable findings</strong><small>Inspect severity, source locations, and tool evidence.</small></span></li>
-            <li><span className="feature-list__icon">04</span><span><strong>Clear integration status</strong><small>See which agents are connected or not deployed.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--violet">✦</span><span><strong>Multi-Agent Validation</strong><small>Code quality, security, bugs, and more.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--blue">ϟ</span><span><strong>AI-Powered Repair</strong><small>Get intelligent fixes and re-validate your code.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--green">▥</span><span><strong>Clear Insights</strong><small>Detailed reports, history, and recommendations.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--orange">▣</span><span><strong>Secure &amp; Reliable</strong><small>Sandboxed execution and safe analysis.</small></span></li>
           </ul>
 
           <div className="auth-illustration" aria-label="Code analysis workflow illustration">
@@ -161,7 +165,7 @@ export function AuthPage({ mode, mockMode, busy, message, error, onModeChange, o
         <section className="auth-card auth-card--reference auth-card__panel--form">
           <div className="auth-form__logo">&lt;/&gt;</div>
           <h2>{headingForMode(mode)}</h2>
-          <p className="auth-form__intro">{introForMode(mode, mockMode)}</p>
+          <p className="auth-form__intro">{introForMode(mode, mockMode, localDemoEnabled)}</p>
           {mockMode && <p className="auth-demo-notice">DEMO MODE · Credentials and reset flows are local demonstrations only.</p>}
           {error && <p className="auth-feedback-message" role="alert">{error}</p>}
           {formError && <p className="auth-feedback-message" role="alert">{formError}</p>}
@@ -226,10 +230,12 @@ export function AuthPage({ mode, mockMode, busy, message, error, onModeChange, o
             </div>}
 
             <button type="submit" className="btn btn--primary auth-submit" disabled={busy || (!mockMode && isRecovery)}>
-              {busy ? "Please wait..." : submitLabel(mode)}{!busy && <span>→</span>}
+              {busy ? "Please wait..." : submitLabel(mode, mockMode)}{!busy && <span>→</span>}
             </button>
 
-            {mode === "signin" && mockMode && <><div className="auth-divider"><span>or</span></div><button type="button" className="btn btn--secondary auth-demo" disabled={busy} onClick={() => onSubmit({ fullName: "Demo Analyst", email: "demo@codevalidation.ai", password: "demo123", remember: true }, "signin")}>Use demo account</button></>}
+            {mode === "signin" && <><div className="auth-divider"><span>or</span></div><button type="button" className="btn btn--secondary auth-google" onClick={onGoogleSignIn}><span className="google-mark" aria-hidden="true">G</span>Continue with Google</button></>}
+            {mode === "signin" && mockMode && <button type="button" className="btn btn--secondary auth-demo" disabled={busy} onClick={() => onSubmit({ fullName: "Demo Analyst", email: "demo@codevalidation.ai", password: "demo123", remember: true }, "signin")}>Use demo account</button>}
+            {mode === "signin" && !mockMode && localDemoEnabled && <><button type="button" className="btn btn--secondary auth-local-demo" onClick={onLocalDemo}>Continue in local demo</button><p className="auth-local-notice">Preview access only. This does not create or authenticate an account.</p></>}
             {mode === "signin" && <p className="auth-switch">Don't have an account? <button type="button" className="inline-link" onClick={() => onModeChange("signup")}>Sign Up</button></p>}
             {mode === "signup" && <p className="auth-switch">Already have an account? <button type="button" className="inline-link" onClick={() => onModeChange("signin")}>Sign In</button></p>}
             {mode === "forgot" && mockMode && <button type="button" className="btn btn--secondary auth-demo" onClick={() => onModeChange("reset")}>Open demo reset form</button>}
@@ -242,10 +248,10 @@ export function AuthPage({ mode, mockMode, busy, message, error, onModeChange, o
   );
 }
 
-function submitLabel(mode: AuthMode): string {
+function submitLabel(mode: AuthMode, mockMode: boolean): string {
   const labels: Record<AuthMode, string> = {
     signin: "Sign In",
-    signup: "Create demo account",
+    signup: mockMode ? "Create demo account" : "Create account",
     forgot: "Request password reset",
     reset: "Reset password",
   };

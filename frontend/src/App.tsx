@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Link, NavLink, Outlet, Route, Routes, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AgentStatusPanel } from "./components/AgentStatusPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RequireAuth } from "./components/RequireAuth";
 import { ToolStatusPanel } from "./components/ToolStatusPanel";
-import type { ProgressEvent, ProjectFile, QualityTool, RunHistoryEntry, SecurityTool, WorkflowRunResponse } from "./types/finding";
+import type { ProgressEvent, ProjectFile, QualityTool, RunHistoryEntry, WorkflowRunResponse } from "./types/finding";
 import { api } from "./services/api";
 import { AgentCenter } from "./pages/AgentCenter";
 import { AnalysisPage } from "./pages/Analysis";
@@ -21,13 +21,13 @@ import { AnalysisTabs } from "./analysis/AnalysisTabs";
 import { createProject, getProject } from "./api/projects";
 import { getProjectFiles } from "./api/files";
 import type { ProjectDetail, ProjectFile as ApiProjectFile } from "./api/types";
-import { DEFAULT_ANALYSIS_CONFIGURATION, type AnalysisConfiguration } from "./api/configuration";
+import { DEFAULT_ANALYSIS_CHECKS, type AnalysisCheckOptions } from "./api/configuration";
 import { AdminSettingsPage } from "./pages/AdminSettings";
 import { useAuth } from "./context/AuthContext";
 import { mocksEnabled } from "./api/client";
 import "./App.css";
 
-type StartHandler = (files: ProjectFile[], tools: QualityTool[], securityTools?: SecurityTool[], projectName?: string, configuration?: AnalysisConfiguration, existingProjectId?: string) => Promise<void>;
+type StartHandler = (files: ProjectFile[], tools: QualityTool[], projectName?: string, existingProjectId?: string, checks?: AnalysisCheckOptions) => Promise<void>;
 
 interface WorkspaceState {
   readonly history: RunHistoryEntry[];
@@ -39,6 +39,8 @@ interface WorkspaceState {
   readonly workflowStatus: string;
   readonly retryCount: number;
   readonly runInProgress: boolean;
+  readonly activeTools: QualityTool[];
+  readonly activeChecks: AnalysisCheckOptions;
   readonly errorMessage: string | null;
   readonly handleStart: StartHandler;
   readonly openHistory: (entry: RunHistoryEntry) => void;
@@ -47,7 +49,7 @@ interface WorkspaceState {
 
 const WorkspaceContext = createContext<WorkspaceState | null>(null);
 const EMPTY_WORKSPACE: WorkspaceState = {
-  history: [], result: null, originalFiles: [], activeStepIndex: 0, workflowStep: "", workflowStatus: "idle", retryCount: 0, runInProgress: false, errorMessage: null,
+  history: [], result: null, originalFiles: [], activeStepIndex: 0, workflowStep: "", workflowStatus: "idle", retryCount: 0, runInProgress: false, activeTools: [], activeChecks: DEFAULT_ANALYSIS_CHECKS, errorMessage: null,
   handleStart: async () => undefined, openHistory: () => undefined, rerun: () => undefined,
 };
 
@@ -59,6 +61,7 @@ export default function App() {
   const navigate = useNavigate();
   const [originalFiles, setOriginalFiles] = useState<ProjectFile[]>([]);
   const [result, setResult] = useState<WorkflowRunResponse | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [progressMessage, setProgressMessage] = useState<string>();
@@ -66,8 +69,10 @@ export default function App() {
   const [workflowStatus, setWorkflowStatus] = useState("idle");
   const [retryCount, setRetryCount] = useState(0);
   const [runInProgress, setRunInProgress] = useState(false);
+  const [activeTools, setActiveTools] = useState<QualityTool[]>([]);
+  const [activeChecks, setActiveChecks] = useState<AnalysisCheckOptions>(DEFAULT_ANALYSIS_CHECKS);
   const requestInFlight = useRef(false);
-  const lastRunOptions = useRef<{ readonly tools: QualityTool[]; readonly securityTools: SecurityTool[]; readonly projectName: string; readonly configuration: AnalysisConfiguration } | null>(null);
+  const lastRunOptions = useRef<{ readonly tools: QualityTool[]; readonly projectName: string; readonly checks: AnalysisCheckOptions } | null>(null);
   const [history, setHistory] = useState<RunHistoryEntry[]>(() => {
     try {
       return JSON.parse(sessionStorage.getItem("coding-validation-run-history") ?? "[]") as RunHistoryEntry[];
@@ -87,6 +92,7 @@ export default function App() {
       setHistory([]);
       setOriginalFiles([]);
       setResult(null);
+      setActiveProjectId(null);
       setErrorMessage(null);
       setActiveStepIndex(0);
       setProgressMessage(undefined);
@@ -94,6 +100,8 @@ export default function App() {
       setWorkflowStatus("idle");
       setRetryCount(0);
       setRunInProgress(false);
+      setActiveTools([]);
+      setActiveChecks(DEFAULT_ANALYSIS_CHECKS);
     };
     const expireSession = (event: Event) => {
       const detail = (event as CustomEvent<{ from?: string }>).detail;
@@ -107,11 +115,13 @@ export default function App() {
     };
   }, [navigate]);
 
-  const handleStart = useCallback(async (files: ProjectFile[], tools: QualityTool[], securityTools: SecurityTool[] = [], projectName = "Python project", configuration = DEFAULT_ANALYSIS_CONFIGURATION, existingProjectId?: string): Promise<void> => {
+  const handleStart = useCallback(async (files: ProjectFile[], tools: QualityTool[], projectName = "Python project", existingProjectId?: string, checks = DEFAULT_ANALYSIS_CHECKS): Promise<void> => {
     if (requestInFlight.current) return;
     requestInFlight.current = true;
-    lastRunOptions.current = { tools, securityTools, projectName, configuration };
+    lastRunOptions.current = { tools, projectName, checks };
     setRunInProgress(true);
+    setActiveTools(tools);
+    setActiveChecks(checks);
     setOriginalFiles(files);
     setResult(null);
     setErrorMessage(null);
@@ -121,10 +131,19 @@ export default function App() {
     setRetryCount(0);
     setProgressMessage("Starting analysis");
     try {
-      const projectId = existingProjectId ?? (await createProject({ name: projectName, files, project_context: { ...configuration } })).project_id;
+      const analysisChecks = {
+        code_quality: checks.codeQuality,
+        security: checks.security,
+        bug_resource: checks.bugResource,
+        complexity: checks.complexity,
+        automated_repair: checks.automatedRepair,
+        final_validation: checks.finalValidation,
+      };
+      const projectId = existingProjectId ?? activeProjectId ?? (await createProject({ name: projectName, files, project_context: { analysis_checks: analysisChecks } })).project_id;
+      setActiveProjectId(projectId);
       navigate(`/analysis/${encodeURIComponent(projectId)}`);
       const response = await api.startAnalysis(
-        { project_id: projectId, files, tools, project_context: { ...configuration, security_tools: securityTools } },
+        { project_id: projectId, files, tools, project_context: { analysis_checks: analysisChecks } },
         (progress: ProgressEvent) => {
           setWorkflowStep(progress.step);
           if (progress.status) setWorkflowStatus(progress.status);
@@ -137,8 +156,9 @@ export default function App() {
           setProgressMessage(progress.message);
         },
       );
-      const completedRun = { ...response, analysis_configuration: configuration };
+      const completedRun = { ...response, project_name: projectName };
       setResult(completedRun);
+      setActiveProjectId(response.project_id);
       setRetryCount(response.retry_count);
       setWorkflowStatus("completed");
       setWorkflowStep("finalize");
@@ -155,11 +175,12 @@ export default function App() {
       requestInFlight.current = false;
       setRunInProgress(false);
     }
-  }, [navigate]);
+  }, [activeProjectId, navigate]);
 
   const openHistory = useCallback((entry: RunHistoryEntry): void => {
     setOriginalFiles(entry.originalFiles);
     setResult(entry.result);
+    setActiveProjectId(entry.project_id);
     setErrorMessage(null);
     navigate(`/analysis/${encodeURIComponent(entry.project_id)}/results`);
   }, [navigate]);
@@ -167,13 +188,13 @@ export default function App() {
   const rerun = useCallback((): void => {
     if (originalFiles.length === 0) return;
     const previous = lastRunOptions.current;
-    if (previous) void handleStart(originalFiles, previous.tools, previous.securityTools, previous.projectName, previous.configuration);
-    else void handleStart(originalFiles, ["ruff", "pylint", "radon"]);
-  }, [handleStart, originalFiles]);
+    if (previous) void handleStart(originalFiles, previous.tools, previous.projectName, activeProjectId ?? undefined, previous.checks);
+    else void handleStart(originalFiles, ["ruff", "pylint", "radon"], "Python project", activeProjectId ?? undefined);
+  }, [activeProjectId, handleStart, originalFiles]);
 
   const value = useMemo<WorkspaceState>(
-    () => ({ history, result, originalFiles, activeStepIndex, progressMessage, workflowStep, workflowStatus, retryCount, runInProgress, errorMessage, handleStart, openHistory, rerun }),
-    [history, result, originalFiles, activeStepIndex, progressMessage, workflowStep, workflowStatus, retryCount, runInProgress, errorMessage, handleStart, openHistory, rerun],
+    () => ({ history, result, originalFiles, activeStepIndex, progressMessage, workflowStep, workflowStatus, retryCount, runInProgress, activeTools, activeChecks, errorMessage, handleStart, openHistory, rerun }),
+    [history, result, originalFiles, activeStepIndex, progressMessage, workflowStep, workflowStatus, retryCount, runInProgress, activeTools, activeChecks, errorMessage, handleStart, openHistory, rerun],
   );
 
   return (
@@ -205,9 +226,12 @@ export default function App() {
 }
 
 function WorkspaceLayout() {
+  const location = useLocation();
   const { user, logout } = useAuth();
   const canManageUsers = usePermission("adminAccess");
   const canStartAnalysis = usePermission("createAnalysis");
+  const isProjectsActive = location.pathname === "/projects"
+    || (location.pathname.startsWith("/projects/") && !location.pathname.startsWith("/projects/new"));
 
   return (
     <div className="app-shell">
@@ -226,7 +250,7 @@ function WorkspaceLayout() {
         <aside className="sidebar" aria-label="Workspace navigation">
           <div className="sidebar__eyebrow">Workspace</div>
           <NavLink className={({ isActive }) => `sidebar__item${isActive ? " sidebar__item--active" : ""}`} to="/" end><span>00</span> Overview</NavLink>
-          <NavLink className={({ isActive }) => `sidebar__item${isActive ? " sidebar__item--active" : ""}`} to="/projects"><span>00</span> Projects</NavLink>
+          <Link className={`sidebar__item${isProjectsActive ? " sidebar__item--active" : ""}`} aria-current={isProjectsActive ? "page" : undefined} to="/projects"><span>00</span> Projects</Link>
           {canStartAnalysis && <NavLink className={({ isActive }) => `sidebar__item${isActive ? " sidebar__item--active" : ""}`} to="/projects/new"><span>01</span> New analysis</NavLink>}
           <NavLink className={({ isActive }) => `sidebar__item${isActive ? " sidebar__item--active" : ""}`} to="/history"><span>02</span> History</NavLink>
           <NavLink className={({ isActive }) => `sidebar__item${isActive ? " sidebar__item--active" : ""}`} to="/agents"><span>03</span> Agent control room</NavLink>
@@ -242,7 +266,7 @@ function WorkspaceLayout() {
       </div>
       <nav className="mobile-nav" aria-label="Workspace navigation">
         <NavLink to="/" end>Overview</NavLink>
-        <NavLink to="/projects">Projects</NavLink>
+        <Link className={isProjectsActive ? "active" : undefined} aria-current={isProjectsActive ? "page" : undefined} to="/projects">Projects</Link>
         {canStartAnalysis && <NavLink to="/projects/new">New</NavLink>}
         <NavLink to="/history">History</NavLink>
         <NavLink to="/agents">Agents</NavLink>
@@ -253,10 +277,12 @@ function WorkspaceLayout() {
 }
 
 function DashboardRoute() {
-  const { history, result } = useWorkspace();
+  const { history, result, openHistory } = useWorkspace();
   const navigate = useNavigate();
   const canStartAnalysis = usePermission("createAnalysis");
-  return <DashboardPage history={history} latestResult={result} onStart={() => navigate("/projects/new")} onOpenResults={() => result && navigate(`/reports/${encodeURIComponent(result.project_id)}`)} onOpenHistory={() => navigate("/history")} canStartAnalysis={canStartAnalysis} />;
+  const latestEntry = history[0];
+  const latestResult = result ?? latestEntry?.result ?? null;
+  return <DashboardPage history={history} latestResult={latestResult} onStart={() => navigate("/projects/new")} onOpenResults={() => latestEntry ? openHistory(latestEntry) : result && navigate(`/reports/${encodeURIComponent(result.project_id)}`)} onOpenHistory={() => navigate("/history")} canStartAnalysis={canStartAnalysis} />;
 }
 
 function UploadRoute() {
@@ -277,14 +303,14 @@ function UploadRoute() {
   }, [existingProjectId]);
 
   if (existingProjectId && !project && !projectLoadError) return <section className="page"><p>Loading project files...</p></section>;
-  return <><UploadPage onStart={(inputFiles, tools, _securityTools, projectName, configuration, projectId) => handleStart(inputFiles, tools, [], projectName, configuration, projectId)} history={history} onOpenHistory={openHistory} initialFiles={files} initialProjectName={project?.name} existingProjectId={existingProjectId} projectLoadError={projectLoadError} runInProgress={runInProgress} /><AgentStatusPanel workflowStep="" workflowStatus="idle" progressMessage="Ready to coordinate analysis" preview /><ToolStatusPanel quality={["Ruff", "Pylint", "Radon"]} /></>;
+  return <UploadPage onStart={(inputFiles, tools, projectName, projectId, checks) => handleStart(inputFiles, tools, projectName, projectId, checks)} history={history} onOpenHistory={openHistory} initialFiles={files} initialProjectName={project?.name} existingProjectId={existingProjectId} projectLoadError={projectLoadError} runInProgress={runInProgress} />;
 }
 
 function AnalysisRoute() {
-  const { activeStepIndex, progressMessage, errorMessage, result, originalFiles, workflowStep, workflowStatus, retryCount, rerun } = useWorkspace();
+  const { activeStepIndex, progressMessage, errorMessage, result, originalFiles, workflowStep, workflowStatus, retryCount, rerun, activeTools, activeChecks } = useWorkspace();
   return errorMessage
     ? <section className="page page--error"><h1>Analysis stopped</h1><p>{errorMessage}</p><p>Last reported repair retries: {retryCount}</p><details><summary>Details</summary><p>Check that the gateway and orchestrator are available, then retry.</p></details>{originalFiles.length > 0 && <button className="btn btn--primary" onClick={rerun}>Retry with these files</button>}<Link className="btn" to="/projects/new">Choose different files</Link></section>
-    : <><AnalysisPage activeStepIndex={activeStepIndex} progressMessage={progressMessage} workflowStep={workflowStep} workflowStatus={workflowStatus} retryCount={retryCount} /><AgentStatusPanel progressMessage={progressMessage} workflowStep={workflowStep} workflowStatus={workflowStatus} result={result} /><AnalysisTabs result={result} files={originalFiles} /></>;
+    : <><AnalysisPage activeStepIndex={activeStepIndex} progressMessage={progressMessage} workflowStep={workflowStep} workflowStatus={workflowStatus} retryCount={retryCount} /><AgentStatusPanel progressMessage={progressMessage} workflowStep={workflowStep} workflowStatus={workflowStatus} result={result} analysisChecks={activeChecks} /><ToolStatusPanel tools={activeTools} result={result} running={workflowStatus === "working" || workflowStatus === "submitted"} /><AnalysisTabs result={result} files={originalFiles} /></>;
 }
 
 function FindingsRoute() {
@@ -295,10 +321,11 @@ function FindingsRoute() {
 }
 
 function ResultsRoute() {
-  const { result, originalFiles, rerun } = useWorkspace();
+  const { result, originalFiles, rerun, history } = useWorkspace();
   const { id } = useParams();
   if (!result) return <section className="page empty-state"><strong>Report data is not loaded in this browser session.</strong><span>{id ? `Run ${id} may be available through the report API.` : "Open a saved history item or start a new analysis."}</span><Link className="btn btn--primary" to="/history">Open history</Link></section>;
-  return <ResultsPage originalFiles={originalFiles} result={result} onRerun={rerun} />;
+  const completedAt = history.find((entry) => entry.project_id === result.project_id)?.timestamp;
+  return <ResultsPage originalFiles={originalFiles} result={result} completedAt={completedAt} onRerun={rerun} />;
 }
 
 function HistoryRoute() {

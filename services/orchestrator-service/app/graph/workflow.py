@@ -17,6 +17,7 @@ from app.graph.nodes import (
 	should_retry,
 	understand_project,
 	validate,
+	_analysis_checks,
 )
 from app.graph.state import WorkflowState
 
@@ -42,6 +43,23 @@ def _track_stage(stage: str, node: Callable[..., Any]) -> Callable[..., Any]:
 	return tracked
 
 
+def _after_prioritize(state: WorkflowState) -> str:
+	checks = _analysis_checks(state.get("project_context"))
+	if checks is None or checks["automated_repair"]:
+		return "repair"
+	return "validate" if checks["final_validation"] else "finalize"
+
+
+def _after_repair(state: WorkflowState) -> str:
+	checks = _analysis_checks(state.get("project_context"))
+	return "validate" if checks is None or checks["final_validation"] else "finalize"
+
+
+def _after_finalize(state: WorkflowState) -> str:
+	checks = _analysis_checks(state.get("project_context"))
+	return "reanalyze" if checks is None or checks["automated_repair"] else END
+
+
 def build_workflow():
 	"""Build the analysis graph used by the orchestrator service.
 
@@ -65,15 +83,23 @@ def build_workflow():
 	graph.add_edge("understand", "analyze")
 	graph.add_edge("analyze", "aggregate")
 	graph.add_edge("aggregate", "explain_prioritize")
-	graph.add_edge("explain_prioritize", "repair")
-	graph.add_edge("repair", "validate")
+	graph.add_conditional_edges(
+		"explain_prioritize",
+		_after_prioritize,
+		{"repair": "repair", "validate": "validate", "finalize": "finalize"},
+	)
+	graph.add_conditional_edges(
+		"repair",
+		_after_repair,
+		{"validate": "validate", "finalize": "finalize"},
+	)
 	graph.add_conditional_edges(
 		"validate",
 		should_retry,
 		{"retry": "retry", "finalize": "finalize"},
 	)
 	graph.add_edge("retry", "repair")
-	graph.add_edge("finalize", "reanalyze")
+	graph.add_conditional_edges("finalize", _after_finalize, {"reanalyze": "reanalyze", END: END})
 	graph.add_edge("reanalyze", "compare")
 	graph.add_edge("compare", END)
 

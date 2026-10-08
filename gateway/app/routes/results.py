@@ -1,13 +1,31 @@
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import get_session
+from app.models import AnalysisRunRecord
 
 router = APIRouter(prefix="/results", tags=["results"])
 
 
 @router.get("/{project_id}")
-async def get_results(project_id: str):
+async def get_results(project_id: str, session: AsyncSession = Depends(get_session)):
+    run = await session.scalar(
+        select(AnalysisRunRecord)
+        .where(AnalysisRunRecord.project_id == project_id)
+        .order_by(AnalysisRunRecord.started_at.desc())
+        .limit(1)
+    )
+    if run is not None:
+        report = (run.result or {}).get("final_report") if run.result else None
+        return {
+            "project_id": project_id,
+            "status": run.status,
+            "report": report if run.status == "completed" else None,
+        }
+
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             response = await client.get(
