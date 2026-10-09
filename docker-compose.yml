@@ -44,13 +44,17 @@ services:
     environment:
       - ORCH_QUALITY_SERVICE_URL=http://code-quality:8000
       - ORCH_SECURITY_SERVICE_URL=http://security:8000
-      - ORCH_BUG_RESOURCE_SERVICE_URL=http://bug-resource:8000
+      - ORCH_BUG_RESOURCE_SERVICE_URL=${ORCH_BUG_RESOURCE_SERVICE_URL:-}
       - ORCH_REPAIR_SERVICE_URL=http://repair:8000
-      - ORCH_SANDBOX_SERVICE_URL=http://sandbox:8000
+      - ORCH_SANDBOX_SERVICE_URL=http://sandbox:8004
       - ORCH_VALIDATION_SERVICE_URL=http://validation:8000
       - ORCH_RUN_STORE_PATH=/service/data/workflow-runs.json
     depends_on:
       - code-quality
+      - security
+      - repair
+      - sandbox
+      - validation
     volumes:
       - orchestrator-data:/service/data
     healthcheck:
@@ -65,6 +69,52 @@ services:
       dockerfile: services/code-quality-service/Dockerfile
     ports:
       - "${QUALITY_PORT:-8002}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  security:
+    build:
+      context: .
+      dockerfile: services/security_service/Dockerfile
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  repair:
+    build:
+      context: .
+      dockerfile: services/repair-service/Dockerfile
+    environment:
+      - OLLAMA_HOST_PORT=${OLLAMA_HOST_PORT:-11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sandbox:
+    build:
+      context: ./services/sandbox_service
+      dockerfile: Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  validation:
+    build:
+      context: .
+      dockerfile: services/validation_service/Dockerfile
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -87,53 +137,3 @@ services:
 volumes:
   orchestrator-data:
   postgres-data:
-
-  # ---- Rakshitha's services (Fix & Regeneration, Security, DB & Reports) ----
-  # Uncomment once services/security-service, services/repair-service, and
-  # services/database-report-service exist.
-  #
-  # security:
-  #   build:
-  #     context: .
-  #     dockerfile: services/security-service/Dockerfile
-  #   ports:
-  #     - "8003:8000"
-  #
-  # repair:
-  #   build:
-  #     context: .
-  #     dockerfile: services/repair-service/Dockerfile
-  #   ports:
-  #     - "8004:8000"
-  #
-  # database-report:
-  #   build:
-  #     context: .
-  #     dockerfile: services/database-report-service/Dockerfile
-  #   ports:
-  #     - "8008:8000"
-
-  # ---- Shifa's services (Validation, Bug & Resource, Docker Sandbox) ----
-  # Uncomment once services/bug-resource-service, services/sandbox-service,
-  # and services/validation-service exist.
-  #
-  # bug-resource:
-  #   build:
-  #     context: .
-  #     dockerfile: services/bug-resource-service/Dockerfile
-  #   ports:
-  #     - "8005:8000"
-  #
-  # sandbox:
-  #   build:
-  #     context: .
-  #     dockerfile: services/sandbox-service/Dockerfile
-  #   ports:
-  #     - "8006:8000"
-  #
-  # validation:
-  #   build:
-  #     context: .
-  #     dockerfile: services/validation-service/Dockerfile
-  #   ports:
-  #     - "8007:8000"

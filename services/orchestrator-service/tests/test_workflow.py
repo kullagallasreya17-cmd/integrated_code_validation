@@ -55,6 +55,11 @@ def test_workflow_runs_end_to_end_with_downstream_boundaries(monkeypatch):
     assert result.get("validation_status") in ("passed", "failed")
     assert result.get("retry_count", 0) <= 3
     assert "final_report" in result
+    assert result["final_report"]["code_structure"]["files"][0]["path"] == "app.py"
+    analyze_stage = next(stage for stage in result["stage_history"] if stage["stage"] == "analyze")
+    assert analyze_stage["agents"]["bug_resource"] == "skipped"
+    assert analyze_stage["agents"]["security"] == "completed"
+    assert analyze_stage["agents"]["quality"] == "completed"
 
     stages = [item["stage"] for item in result.get("stage_history", [])]
     assert stages.index("explain_prioritize") < stages.index("repair")

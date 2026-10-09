@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes import (
@@ -23,7 +24,7 @@ from app.graph.state import WorkflowState
 
 
 def _track_stage(stage: str, node: Callable[..., Any]) -> Callable[..., Any]:
-	async def tracked(state: WorkflowState, config: dict | None = None) -> dict:
+	async def tracked(state: WorkflowState, config: RunnableConfig | None = None) -> dict:
 		callback = (config or {}).get("configurable", {}).get("on_stage")
 		if callable(callback):
 			callback(stage, "running")

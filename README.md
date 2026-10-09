@@ -1,8 +1,7 @@
 # Coding validation agent — Sreya's portion
 
-This is the **Orchestrator + Code Quality + Frontend** slice of the
-coding-validation-agent project, built to plug into the microservices
-architecture agreed on for the team:
+This checkout contains the Orchestrator, Code Quality, Frontend, and the
+available teammate agent implementations integrated through HTTP adapters:
 
 - **Sreya** — Orchestrator + Code Quality + Frontend *(this folder)*
 - **Rakshitha** — Fix & Regeneration + Security + Database & Reports
@@ -14,13 +13,26 @@ architecture agreed on for the team:
 coding-validation-agent/
 ├── services/
 │   ├── orchestrator-service/     LangGraph workflow (FastAPI)
-│   └── code-quality-service/     Ruff + Pylint + Radon (FastAPI)
+│   ├── code-quality-service/     Ruff + Pylint + Radon (FastAPI)
+│   ├── security_service/         Bandit, Semgrep, and Gitleaks (FastAPI)
+│   ├── validation_service/       Python validation checks (FastAPI)
+│   ├── repair-service/           Fix & Regeneration container definition
+│   └── sandbox_service/          Isolated execution API (not enabled)
+├── app/                          Repair agent implementation
 ├── gateway/                     API entry point (FastAPI)
 ├── frontend/                     React + TypeScript + Vite UI
 ├── shared/schemas/                Common contracts (Finding, workflow, etc.)
 └── docker-compose.yml             Runs frontend, Gateway, PostgreSQL,
-                                    Orchestrator, and Code Quality
+                                    Orchestrator, Code Quality, Security,
+                                    Validation, and Repair
 ```
+
+The orchestrator adapts the Security, Validation, and Repair agents' current
+per-file APIs to its workflow contracts. The Sandbox source is present but is
+not enabled in Compose because it requires access to the host Docker socket.
+Bug & Resource and Database & Reports implementations were not present on the
+team branches fetched for this integration, so those capabilities remain
+unavailable and are not represented as successful results.
 
 ## Running it locally
 
@@ -36,7 +48,14 @@ docker compose up --build -d
 - Gateway: http://localhost:8000 (docs at /docs)
 - Orchestrator: http://localhost:8001 (internal gateway target)
 - Code quality service: http://localhost:8002 (docs at /docs)
+- Security, Validation, and Repair: internal Compose services; not published
+   to host ports
 - PostgreSQL: internal Compose service; data persists in `postgres-data`
+
+The Repair agent calls Ollama on the Docker host at port `11434` by default.
+Set `OLLAMA_HOST_PORT` in `.env` if your host Ollama uses another port. To avoid host-port
+collisions when another stack is running, override `GATEWAY_PORT`,
+`ORCHESTRATOR_PORT`, `QUALITY_PORT`, or `FRONTEND_PORT` in `.env`.
 
 The Gateway creates the initial SQLAlchemy schema at startup. Compose supplies
 `GATEWAY_DATABASE_URL` using `POSTGRES_DB`, `POSTGRES_USER`, and

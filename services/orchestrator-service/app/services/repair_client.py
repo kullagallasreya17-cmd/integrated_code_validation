@@ -7,24 +7,35 @@ from app.config import settings
 
 
 async def repair(project_id: str, files: dict[str, str], findings: list[dict], repair_attempt: int) -> dict:
-    payload = {
-        "project_id": project_id,
-        "files": [{"path": p, "content": c} for p, c in files.items()],
-        "findings": findings,
-        "repair_attempt": repair_attempt,
-    }
-
+    repaired_files = dict(files)
+    errors = []
     async with httpx.AsyncClient(timeout=settings.repair_call_timeout_seconds) as client:
-        try:
-            resp = await client.post(f"{settings.repair_service_url}/repair", json=payload)
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPError as exc:
-            # Fall back to returning the code unchanged so the graph can
-            # still reach validation (which will then correctly fail).
-            return {
-                "project_id": project_id,
-                "repaired_files": [{"path": p, "content": c} for p, c in files.items()],
-                "changelog": [],
-                "error": f"repair-service unreachable (not yet integrated?): {exc}",
-            }
+        for finding in findings:
+            path = finding.get("file")
+            if path not in repaired_files:
+                errors.append(f"repair finding references unknown file: {path}")
+                continue
+            try:
+                response = await client.post(
+                    f"{settings.repair_service_url}/analyze-fix",
+                    json={
+                        "code": repaired_files[path],
+                        "finding": finding.get("description") or finding.get("issue", ""),
+                        "severity": finding.get("severity", "medium"),
+                    },
+                )
+                response.raise_for_status()
+                fixed_code = response.json().get("fixed_code")
+                if not isinstance(fixed_code, str) or not fixed_code.strip():
+                    errors.append(f"repair service returned no fixed code for {path}")
+                    continue
+                repaired_files[path] = fixed_code
+            except httpx.HTTPError as exc:
+                errors.append(f"{path}: {exc}")
+
+    return {
+        "project_id": project_id,
+        "mode": "targeted",
+        "repaired_files": [{"path": path, "content": content} for path, content in repaired_files.items()],
+        "error": "; ".join(errors) if errors else None,
+    }

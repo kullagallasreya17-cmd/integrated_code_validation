@@ -54,7 +54,7 @@ async def analyze(state: WorkflowState) -> dict:
     checks = _analysis_checks(context)
     security_enabled = checks is None or checks["security"]
     quality_enabled = checks is None or checks["code_quality"] or checks["complexity"]
-    resource_enabled = checks is None or checks["bug_resource"]
+    resource_enabled = (checks is None or checks["bug_resource"]) and bool(settings.bug_resource_service_url)
 
     calls = []
     agents = []
@@ -255,14 +255,15 @@ async def validate(state: WorkflowState) -> dict:
         result = await validation_client.validate(project_id, files, state.get("findings", []))
     except Exception as exc:  # noqa: BLE001 - convert downstream failure to state
         result = {"passed": False, "error": f"validation failed: {exc}"}
-    passed = bool(result.get("passed"))
+    passed = bool(result.get("passed")) and bool(sandbox_result.get("passed", True))
+    validation_results = {**result, "passed": passed}
     agent_errors = [*state.get("agent_errors", [])]
-    if result.get("error"):
-        agent_errors.append({"agent": "validation", "error": result["error"]})
+    if validation_results.get("error"):
+        agent_errors.append({"agent": "validation", "error": validation_results["error"]})
 
     return {
         "sandbox_result": sandbox_result,
-        "validation_results": result,
+        "validation_results": validation_results,
         "validation_status": "passed" if passed else "failed",
         "agent_errors": agent_errors,
         "workflow_trace": [*state.get("workflow_trace", []), "Validation completed"],
