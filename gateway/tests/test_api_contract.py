@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from uuid import uuid4
 
 from app.main import app
 from app.routes import analysis
@@ -7,7 +8,13 @@ from app.routes import analysis
 
 @pytest.fixture
 def client():
-    with TestClient(app) as test_client:
+    with TestClient(app, base_url="https://testserver") as test_client:
+        registered = test_client.post("/api/auth/register", json={
+            "email": f"api-test-{uuid4().hex}@example.test",
+            "full_name": "API Test User",
+            "password": "test-password-long-123",
+        })
+        assert registered.status_code == 201
         yield test_client
 
 

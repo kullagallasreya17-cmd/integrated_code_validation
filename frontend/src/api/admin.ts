@@ -5,6 +5,7 @@ export interface CreateUserRequest {
   readonly full_name: string;
   readonly email: string;
   readonly role: Role;
+  readonly password: string;
 }
 
 export interface UpdateUserRequest {

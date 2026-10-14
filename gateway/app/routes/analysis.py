@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import SessionFactory, get_session
-from app.models import AnalysisRunRecord, ProjectRecord
+from app.models import AnalysisRunRecord, ProjectRecord, UserRecord
+from app.security import get_current_user, require_owned_project, require_roles
 from app.services.run_store import (
     create_run,
     latest_run_for_workflow,
@@ -28,8 +29,8 @@ class StartAnalysisRequest(BaseModel):
     project_context: dict = Field(default_factory=dict)
     tools: list[str] | None = None
 
-router = APIRouter(prefix="/analysis", tags=["analysis"])
-api_router = APIRouter(prefix="/api", tags=["analysis"])
+router = APIRouter(prefix="/analysis", tags=["analysis"], dependencies=[Depends(get_current_user)])
+api_router = APIRouter(prefix="/api", tags=["analysis"], dependencies=[Depends(get_current_user)])
 
 
 async def _create_workflow_run(
@@ -73,7 +74,9 @@ async def _create_workflow_run(
 async def run_analysis(
     request: StartAnalysisRequest,
     session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(require_roles("Developer", "Administrator")),
 ):
+    await require_owned_project(session, request.project_id, current_user)
     return await _create_workflow_run(
         request.project_id,
         [item.model_dump() for item in request.files],
@@ -84,7 +87,13 @@ async def run_analysis(
 
 
 @router.get("/stream/{project_id}")
-async def stream_analysis(project_id: str):
+async def stream_analysis(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+):
+    await require_owned_project(session, project_id, current_user)
+
     async def events():
         try:
             async with httpx.AsyncClient(timeout=None) as client:
@@ -116,7 +125,12 @@ async def stream_analysis(project_id: str):
 
 
 @router.get("/status/{project_id}")
-async def analysis_status(project_id: str):
+async def analysis_status(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+):
+    await require_owned_project(session, project_id, current_user)
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             response = await client.get(
@@ -131,9 +145,13 @@ async def analysis_status(project_id: str):
 
 
 @router.get("/{project_id}/findings")
-async def analysis_findings(project_id: str):
-    status = await analysis_status(project_id)
-    result = status.get("result", {})
+async def analysis_findings(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+):
+    run_status = await analysis_status(project_id, session, current_user)
+    result = run_status.get("result", {})
     return {
         "project_id": project_id,
         "findings": result.get("findings", []),
@@ -142,10 +160,15 @@ async def analysis_findings(project_id: str):
 
 
 @api_router.post("/analysis")
-async def start_api_analysis(request: dict, session: AsyncSession = Depends(get_session)):
+async def start_api_analysis(
+    request: dict,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(require_roles("Developer", "Administrator")),
+):
     project_id = request.get("project_id")
-    if not project_id or await session.get(ProjectRecord, project_id) is None:
-        raise HTTPException(status_code=404, detail="project not found")
+    if not project_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await require_owned_project(session, project_id, current_user)
     project_source_files = [file_payload(item) for item in await project_files(session, project_id)]
     started = await _create_workflow_run(
         project_id,
@@ -157,10 +180,12 @@ async def start_api_analysis(request: dict, session: AsyncSession = Depends(get_
     return {**started, "status": "started"}
 
 
-async def _api_status(run_id: str, session: AsyncSession) -> dict:
+async def _api_status(run_id: str, session: AsyncSession, current_user: UserRecord) -> dict:
     run = await session.get(AnalysisRunRecord, run_id)
+    project_id = run.project_id if run is not None else run_id
+    await require_owned_project(session, project_id, current_user)
     workflow_id = run.workflow_id if run is not None else run_id
-    status = await analysis_status(workflow_id)
+    status = await analysis_status(workflow_id, session, current_user)
     if run is not None:
         await persist_snapshot(session, run, status)
         await session.commit()
@@ -169,8 +194,12 @@ async def _api_status(run_id: str, session: AsyncSession) -> dict:
 
 
 @api_router.get("/analysis/{run_id}/status")
-async def api_analysis_status(run_id: str, session: AsyncSession = Depends(get_session)):
-    status = await _api_status(run_id, session)
+async def api_analysis_status(
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+):
+    status = await _api_status(run_id, session, current_user)
     return {
         "run_id": status.get("run_id", run_id),
         "project_id": status.get("project_id"),
@@ -183,8 +212,12 @@ async def api_analysis_status(run_id: str, session: AsyncSession = Depends(get_s
 
 
 @api_router.get("/analysis/{run_id}/results")
-async def api_analysis_results(run_id: str, session: AsyncSession = Depends(get_session)):
-    status = await _api_status(run_id, session)
+async def api_analysis_results(
+    run_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+):
+    status = await _api_status(run_id, session, current_user)
     result = status.get("result", {})
     findings = result.get("findings", [])
     return {

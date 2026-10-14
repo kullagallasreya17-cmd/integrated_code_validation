@@ -1,14 +1,16 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { login as loginRequest } from "../api/auth";
-import { clearSession, dispatchWorkspaceClear, readSession, saveSession } from "../api/client";
+import { getCurrentUser, login as loginRequest, loginLocalDemo as loginLocalDemoRequest, logout as logoutRequest, register as registerRequest } from "../api/auth";
+import { clearSession, dispatchWorkspaceClear, saveSession } from "../api/client";
 import type { AuthSession, Role } from "../api/types";
 
 interface AuthContextValue {
   readonly session: AuthSession | null;
   readonly user: AuthSession["user"] | null;
   readonly isAuthenticated: boolean;
+  readonly isLoading: boolean;
   readonly login: (email: string, password: string, remember: boolean) => Promise<void>;
-  readonly loginAsLocalDemo: () => void;
+  readonly register: (fullName: string, email: string, password: string) => Promise<void>;
+  readonly loginAsLocalDemo: () => Promise<void>;
   readonly logout: () => void;
 }
 
@@ -19,29 +21,49 @@ interface AuthProviderProps {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: Readonly<AuthProviderProps>) {
-  const [session, setSession] = useState<AuthSession | null>(() => readSession());
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [idleWarning, setIdleWarning] = useState(false);
 
+  useEffect(() => {
+    let active = true;
+    void getCurrentUser()
+      .then((user) => {
+        if (!active) return;
+        const nextSession = { user };
+        saveSession(nextSession);
+        setSession(nextSession);
+      })
+      .catch(() => {
+        clearSession();
+        if (active) setSession(null);
+      })
+      .finally(() => { if (active) setIsLoading(false); });
+    return () => { active = false; };
+  }, []);
+
   const login = useCallback(async (email: string, password: string, remember: boolean) => {
-    const nextSession = await loginRequest({ email, password });
+    const nextSession = await loginRequest({ email, password, remember });
     const validRoles: readonly Role[] = ["Developer", "Reviewer", "Technical Lead", "Administrator"];
     if (!validRoles.includes(nextSession.user.role)) throw new Error("The account role is not recognized.");
-    saveSession(nextSession, remember);
+    saveSession(nextSession);
     setSession(nextSession);
   }, []);
 
-  const loginAsLocalDemo = useCallback(() => {
-    const id = crypto.randomUUID();
-    const nextSession: AuthSession = {
-      access_token: `local-demo-${id}`,
-      token_type: "Bearer",
-      user: { id, email: "demo@local.invalid", full_name: "Local demo", role: "Developer" },
-    };
-    saveSession(nextSession, false);
+  const register = useCallback(async (fullName: string, email: string, password: string) => {
+    const nextSession = await registerRequest({ full_name: fullName, email, password });
+    saveSession(nextSession);
+    setSession(nextSession);
+  }, []);
+
+  const loginAsLocalDemo = useCallback(async () => {
+    const nextSession = await loginLocalDemoRequest();
+    saveSession(nextSession);
     setSession(nextSession);
   }, []);
 
   const logout = useCallback(() => {
+    void logoutRequest().catch(() => undefined);
     clearSession();
     setSession(null);
     setIdleWarning(false);
@@ -75,7 +97,7 @@ export function AuthProvider({ children }: Readonly<AuthProviderProps>) {
     };
   }, [session, logout]);
 
-  const value = useMemo<AuthContextValue>(() => ({ session, user: session?.user ?? null, isAuthenticated: Boolean(session), login, loginAsLocalDemo, logout }), [session, login, loginAsLocalDemo, logout]);
+  const value = useMemo<AuthContextValue>(() => ({ session, user: session?.user ?? null, isAuthenticated: Boolean(session), isLoading, login, register, loginAsLocalDemo, logout }), [session, isLoading, login, register, loginAsLocalDemo, logout]);
   return <AuthContext.Provider value={value}>{children}{idleWarning && <dialog open className="idle-warning" aria-labelledby="idle-warning-title"><h2 id="idle-warning-title">Session ending soon</h2><p>You will be signed out in one minute because of inactivity.</p><button className="btn btn--primary" onClick={() => setIdleWarning(false)}>Stay signed in</button><button className="btn" onClick={logout}>Log out</button></dialog>}</AuthContext.Provider>;
 }
 

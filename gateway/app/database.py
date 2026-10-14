@@ -33,11 +33,15 @@ async def initialize_database() -> None:
     has_version = "alembic_version" in tables
     existing_application_tables = tables & expected_tables
     if not has_version and existing_application_tables:
-        if not expected_tables.issubset(tables):
-            missing = ", ".join(sorted(expected_tables - tables))
+        initial_tables = {
+            "projects", "project_files", "analysis_runs", "findings", "tool_results",
+            "workflow_events", "repairs", "validation_results", "reports",
+        }
+        if not initial_tables.issubset(tables):
+            missing = ", ".join(sorted(initial_tables - tables))
             raise RuntimeError(f"Database has a partial unversioned schema; missing tables: {missing}")
         alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-        await asyncio.to_thread(command.stamp, alembic_config, "head")
+        await asyncio.to_thread(command.stamp, alembic_config, "0001_initial")
 
     alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     await asyncio.to_thread(command.upgrade, alembic_config, "head")

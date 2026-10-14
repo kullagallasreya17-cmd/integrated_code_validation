@@ -3,12 +3,13 @@ import { Link } from "react-router-dom";
 import { createAdminUser, getAdminUsers, updateAdminUser } from "../api/admin";
 import type { Role, User } from "../api/types";
 
-const ROLES: Role[] = ["Developer", "Reviewer", "Administrator"];
+const ROLES: Role[] = ["Developer", "Reviewer", "Technical Lead", "Administrator"];
 
 export function AdminUsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("Developer");
   const [editingUserId, setEditingUserId] = useState("");
   const [editFullName, setEditFullName] = useState("");
@@ -32,9 +33,9 @@ export function AdminUsersPage() {
   async function createUser(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      const created = await createAdminUser({ full_name: fullName.trim(), email: email.trim(), role });
+      const created = await createAdminUser({ full_name: fullName.trim(), email: email.trim(), role, password });
       setUsers((items) => [...items, created]);
-      setFullName(""); setEmail(""); setRole("Developer"); setError("");
+      setFullName(""); setEmail(""); setPassword(""); setRole("Developer"); setError("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "User could not be created."); }
   }
 
@@ -64,6 +65,8 @@ export function AdminUsersPage() {
       <label>Full name<input required value={fullName} onChange={(event) => setFullName(event.target.value)} /></label>
       <label>Email<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
       <label>Role<select value={role} onChange={(event) => setRole(event.target.value as Role)}>{ROLES.map((item) => <option key={item}>{item}</option>)}</select></label>
+      <label>Temporary password<input required type="password" minLength={12} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+      <p>The password is hashed by the Gateway and is never returned by the API. Share it with the user through a secure channel.</p>
       <button className="btn btn--primary" type="submit">Create user</button>
     </form>
     <section><div className="section-label"><h2>Users</h2><span>{users.length} accounts</span></div>

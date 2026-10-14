@@ -5,13 +5,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_session
-from app.models import AnalysisRunRecord
+from app.models import AnalysisRunRecord, UserRecord
+from app.security import get_current_user, require_owned_project
 
-router = APIRouter(prefix="/results", tags=["results"])
+router = APIRouter(prefix="/results", tags=["results"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/{project_id}")
-async def get_results(project_id: str, session: AsyncSession = Depends(get_session)):
+async def get_results(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+):
+    await require_owned_project(session, project_id, current_user)
     run = await session.scalar(
         select(AnalysisRunRecord)
         .where(AnalysisRunRecord.project_id == project_id)

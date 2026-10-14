@@ -12,6 +12,7 @@ async def save_project(
     name: str,
     files: list[dict[str, str]],
     description: str | None = None,
+    owner_id: str | None = None,
     *,
     replace_files: bool = True,
 ) -> ProjectRecord:
@@ -19,6 +20,7 @@ async def save_project(
     if project is None:
         project = ProjectRecord(
             project_id=project_id,
+            owner_id=owner_id,
             name=name,
             description=description,
             status="uploaded",

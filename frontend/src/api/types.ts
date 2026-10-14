@@ -132,8 +132,6 @@ export interface User {
 }
 
 export interface AuthSession {
-  readonly access_token: string;
-  readonly token_type: string;
   readonly user: User;
 }
 
