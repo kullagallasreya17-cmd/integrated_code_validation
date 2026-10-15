@@ -9,12 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.models import AnalysisRunRecord, ProjectRecord
+from app.models import UserRecord
+from app.security import get_current_user, require_owned_project, require_roles
 from app.services.store import project_files, project_summary, save_project
 from shared.schemas.project import ProjectMeta
 from shared.schemas.workflow import ProjectFile
 
-router = APIRouter(prefix="/projects", tags=["projects"])
-api_router = APIRouter(prefix="/api/projects", tags=["projects"])
+router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(get_current_user)])
+api_router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(get_current_user)])
 
 class ProjectCreate(BaseModel):
     name: str = "Untitled project"
@@ -49,12 +51,12 @@ def _project_meta(record: ProjectRecord) -> ProjectMeta:
     )
 
 
-async def _create_project(project: ProjectCreate, session: AsyncSession) -> ProjectMeta:
+async def _create_project(project: ProjectCreate, session: AsyncSession, owner: UserRecord) -> ProjectMeta:
     project_id = f"proj-{uuid4().hex}"
     files = [item.model_dump() for item in project.files]
     if not files and project.source_code:
         files = [{"path": "main.py", "content": project.source_code}]
-    record = await save_project(session, project_id, project.name, files)
+    record = await save_project(session, project_id, project.name, files, owner_id=owner.user_id)
     await session.commit()
     return _project_meta(record)
 
@@ -69,8 +71,9 @@ async def create_project(project: ProjectMeta) -> ProjectMeta:
 async def create_api_project(
     project: ProjectCreate,
     session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(require_roles("Developer", "Administrator")),
 ) -> ProjectMeta:
-    return await _create_project(project, session)
+    return await _create_project(project, session, current_user)
 
 
 @api_router.get("")
@@ -80,8 +83,9 @@ async def list_projects(
     search: str = "",
     sort: str = "created_at",
     session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
 ) -> dict:
-    statement = select(ProjectRecord)
+    statement = select(ProjectRecord).where(ProjectRecord.owner_id == current_user.user_id)
     if search.strip():
         statement = statement.where(ProjectRecord.name.ilike(f"%{search.strip()}%"))
     total = await session.scalar(select(func.count()).select_from(statement.subquery())) or 0
@@ -103,10 +107,12 @@ async def list_projects(
 
 
 @api_router.get("/{project_id}")
-async def get_api_project(project_id: str, session: AsyncSession = Depends(get_session)) -> dict:
-    record = await session.get(ProjectRecord, project_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+async def get_api_project(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(get_current_user),
+) -> dict:
+    record = await require_owned_project(session, project_id, current_user)
     files = await project_files(session, project_id)
     runs = list((await session.scalars(
         select(AnalysisRunRecord)
@@ -136,10 +142,9 @@ async def update_api_project(
     project_id: str,
     changes: ProjectPatch,
     session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(require_roles("Developer", "Administrator")),
 ) -> dict:
-    record = await session.get(ProjectRecord, project_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+    record = await require_owned_project(session, project_id, current_user)
     patch = changes.model_dump(exclude_unset=True)
     if "name" in patch:
         if not patch["name"].strip():
@@ -173,10 +178,12 @@ async def update_api_project(
 
 
 @api_router.delete("/{project_id}", status_code=204)
-async def delete_api_project(project_id: str, session: AsyncSession = Depends(get_session)) -> None:
-    record = await session.get(ProjectRecord, project_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+async def delete_api_project(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(require_roles("Developer", "Administrator")),
+) -> None:
+    record = await require_owned_project(session, project_id, current_user)
     await session.delete(record)
     await session.commit()
 
@@ -186,6 +193,7 @@ async def upload_project(
     name: Annotated[str, Form(...)],
     files: Annotated[list[UploadFile], File(...)],
     session: AsyncSession = Depends(get_session),
+    current_user: UserRecord = Depends(require_roles("Developer", "Administrator")),
 ) -> ProjectMeta:
     contents = []
     for file in files:
@@ -193,4 +201,4 @@ async def upload_project(
         if not path or path.startswith("/") or ".." in path.split("/") or not path.lower().endswith(".py"):
             raise HTTPException(status_code=422, detail="Only relative Python source files are supported.")
         contents.append({"path": path, "content": (await file.read()).decode("utf-8")})
-    return await _create_project(ProjectCreate(name=name, files=contents), session)
+    return await _create_project(ProjectCreate(name=name, files=contents), session, current_user)

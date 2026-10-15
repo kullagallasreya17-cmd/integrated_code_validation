@@ -35,6 +35,7 @@ export const DEFAULT_STEPS: ProgressStep["label"][] = [
   "Quality, security & bug analysis",
   "Finding aggregation",
   "Explain & prioritize",
+  "AI report & recommendations",
   "Repair",
   "Validate in sandbox",
   "Re-analyze repaired code",

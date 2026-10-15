@@ -1,6 +1,7 @@
 """LangGraph workflow for the validation and autonomous repair loop."""
 
 from collections.abc import Callable
+import inspect
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -13,6 +14,7 @@ from app.graph.nodes import (
 	compare_results,
 	explain_and_prioritize,
 	finalize,
+	report_and_recommend,
 	reanalyze,
 	repair,
 	should_retry,
@@ -29,7 +31,9 @@ def _track_stage(stage: str, node: Callable[..., Any]) -> Callable[..., Any]:
 		if callable(callback):
 			callback(stage, "running")
 		try:
-			update = await node(state)
+			update = node(state)
+			if inspect.isawaitable(update):
+				update = await update
 		except Exception:
 			if callable(callback):
 				callback(stage, "failed")
@@ -73,6 +77,7 @@ def build_workflow():
 	graph.add_node("analyze", _track_stage("analyze", analyze))
 	graph.add_node("aggregate", _track_stage("aggregate", aggregate_findings))
 	graph.add_node("explain_prioritize", _track_stage("explain_prioritize", explain_and_prioritize))
+	graph.add_node("report_recommend", _track_stage("report_recommend", report_and_recommend))
 	graph.add_node("repair", _track_stage("repair", repair))
 	graph.add_node("validate", _track_stage("validate", validate))
 	graph.add_node("retry", _track_stage("retry", bump_retry))
@@ -84,8 +89,9 @@ def build_workflow():
 	graph.add_edge("understand", "analyze")
 	graph.add_edge("analyze", "aggregate")
 	graph.add_edge("aggregate", "explain_prioritize")
+	graph.add_edge("explain_prioritize", "report_recommend")
 	graph.add_conditional_edges(
-		"explain_prioritize",
+		"report_recommend",
 		_after_prioritize,
 		{"repair": "repair", "validate": "validate", "finalize": "finalize"},
 	)

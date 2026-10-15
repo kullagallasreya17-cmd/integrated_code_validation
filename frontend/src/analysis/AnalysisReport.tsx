@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { numberOf, recordOf, safeEvidence, textOf } from "./model";
-import type { Finding, ProjectFile, Severity, WorkflowRunResponse } from "../types/finding";
+import type { FinalReport, Finding, ProjectFile, QualitySummary, Severity, WorkflowRunResponse } from "../types/finding";
 
 interface AnalysisReportProps {
   readonly result: WorkflowRunResponse;
@@ -11,17 +11,28 @@ interface AnalysisReportProps {
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 const TOOLS = ["ruff", "pylint", "radon"];
+const TOOL_CODE_PATTERN = /\b[A-Z][A-Z0-9]{0,16}\d{3,}\b/;
 const PIPELINE = [
   { label: "Understand", keys: ["understand"] },
   { label: "Analyze", keys: ["analyze"] },
   { label: "Aggregate", keys: ["aggregate"] },
   { label: "Prioritize", keys: ["explainprioritize", "prioritize"] },
+  { label: "AI report & recommendations", keys: ["reportrecommend"] },
   { label: "Repair", keys: ["repair"] },
   { label: "Validate", keys: ["validate"] },
   { label: "Re-analyze", keys: ["reanalyze", "reanalyzecode"] },
   { label: "Compare", keys: ["compare"] },
   { label: "Report", keys: ["finalize", "report"] },
 ];
+
+type FileMetrics = NonNullable<QualitySummary["per_file"]>[string];
+
+interface ReportFileRow {
+  readonly path: string;
+  readonly source?: ProjectFile;
+  readonly findings: Finding[];
+  readonly metrics?: FileMetrics;
+}
 
 function toList(value: unknown): Record<string, unknown>[] | undefined {
   return Array.isArray(value) ? value.filter((item) => item !== null && typeof item === "object") as Record<string, unknown>[] : undefined;
@@ -97,112 +108,218 @@ function formatDate(value?: string): string {
 }
 
 function findingCode(finding: Finding): string {
-  const toolCode = finding.issue.match(/\b[A-Z][A-Z0-9]+\d{3,}\b/)?.[0];
-  return toolCode ?? finding.issue;
+  const toolCode = TOOL_CODE_PATTERN.exec(finding.issue);
+  return toolCode?.[0] ?? finding.issue;
+}
+
+function validationExplanation(status: string, findingCount: number, reasons: string[], counts: Record<Severity, number | undefined>): string {
+  if (status === "passed") {
+    if (findingCount === 0) return "Validation passed and no findings were returned.";
+    const suffix = findingCount === 1 ? "" : "s";
+    return `Validation passed with ${findingCount} finding${suffix} returned for review.`;
+  }
+  if (status === "failed") {
+    if (reasons[0]) return `Validation did not pass because the workflow reported: ${reasons[0]}`;
+    const criticalOrHigh = (counts.critical ?? 0) + (counts.high ?? 0);
+    if (criticalOrHigh > 0) {
+      const suffix = criticalOrHigh === 1 ? "" : "s";
+      return `Validation failed with ${counts.critical} critical and ${counts.high} high-severity finding${suffix}.`;
+    }
+    return "The workflow reported a failed validation. No specific validation error was returned.";
+  }
+  if (status === "pending") return "This workflow is still in progress; a final validation decision has not been returned.";
+  if (status === "not_run") return "Final validation was not run for this analysis. Review the available analyzer results.";
+  return "The workflow did not return a validation explanation.";
+}
+
+function validationHeading(status: string): string {
+  if (status === "not_run") return "Validation not run";
+  if (status === "passed") return "Why did validation pass?";
+  if (status === "failed") return "Why did validation fail?";
+  return "Why did validation stop?";
+}
+
+function toolStatusClass(status: string): string {
+  if (status === "Completed" || status === "Passed") return "completed";
+  if (status === "Failed") return "failed";
+  return "unknown";
+}
+
+function availabilityMessage(agent: string, error: { message: string } | undefined, reported: boolean, count: number): string {
+  if (error) return `Not analyzed: ${error.message}`;
+  if (!reported) return `${agent} analysis was not run or its results were not returned for this validation.`;
+  const suffix = count === 1 ? "" : "s";
+  return `${count} ${agent.toLowerCase()} finding${suffix} returned.`;
+}
+
+function findingSummary(hasFindingData: boolean, findings: Finding[]): string {
+  if (!hasFindingData) return "Finding data not returned";
+  const suffix = findings.length === 1 ? "" : "s";
+  return `${findings.length} finding${suffix} returned`;
+}
+
+function recommendationStatusLabel(status: string): string {
+  if (status === "passed") return "REVIEW RESULTS";
+  if (status === "failed") return "REVIEW REQUIRED";
+  return validationLabel(status);
+}
+
+function getFindingData(result: WorkflowRunResponse, report: FinalReport, rawReport: Record<string, unknown>) {
+  const findings = toFindings(result.findings) ?? toFindings(rawReport.findings) ?? [];
+  const hasFindingData = result.findings_reported ?? (Array.isArray(result.findings) || Array.isArray(rawReport.findings));
+  const bySeverity = recordOf(recordOf(report.findings_summary).by_severity);
+  const counts = hasFindingData ? severityCounts(findings) : {
+    critical: numberOf(bySeverity.critical),
+    high: numberOf(bySeverity.high),
+    medium: numberOf(bySeverity.medium),
+    low: numberOf(bySeverity.low),
+    info: numberOf(bySeverity.info),
+  };
+  return { findings, hasFindingData, counts };
+}
+
+function getAgentData(result: WorkflowRunResponse, report: FinalReport, rawReport: Record<string, unknown>, findings: Finding[]) {
+  const errors = toList(result.agent_errors) ?? toList(report.agent_errors) ?? [];
+  const errorSummary = errors.map((error) => ({
+    agent: safeText(error.agent) ?? "Agent",
+    message: safeText(error.error) ?? "Error detail not available",
+  }));
+  const findError = (names: string[]) => errorSummary.find((error) => names.some((name) => error.agent.toLowerCase().includes(name)));
+  const securityFindings = toFindings(result.security_findings) ?? toFindings(report.security_findings) ?? findings.filter((finding) => finding.category === "security");
+  const resourceFindings = toFindings(result.resource_findings) ?? toFindings(report.resource_findings) ?? findings.filter((finding) => finding.category === "resource" || finding.category === "bug");
+  const securityError = findError(["security"]);
+  const resourceError = findError(["bug", "resource"]);
+  const securityReported = !securityError && (Array.isArray(result.security_findings) || Array.isArray(report.security_findings) || findings.some((finding) => finding.category === "security"));
+  const resourceReported = !resourceError && (Array.isArray(result.resource_findings) || Array.isArray(report.resource_findings) || findings.some((finding) => finding.category === "resource" || finding.category === "bug"));
+  return {
+    errors,
+    errorSummary,
+    securityFindings,
+    resourceFindings,
+    securityError,
+    resourceError,
+    securityReported,
+    resourceReported,
+    securityTools: toList(result.security_tool_runs) ?? toList(rawReport.security_tool_runs) ?? [],
+  };
+}
+
+function buildFileRows(sourceFiles: ProjectFile[], perFile: Record<string, FileMetrics | undefined>, findings: Finding[]): ReportFileRow[] {
+  const paths = new Set([
+    ...sourceFiles.map((file) => file.path),
+    ...Object.keys(perFile),
+    ...findings.map((finding) => finding.file),
+  ]);
+  return [...paths].sort((first, second) => first.localeCompare(second)).map((path) => ({
+    path,
+    source: sourceFiles.find((file) => file.path === path),
+    findings: findings.filter((finding) => finding.file === path),
+    metrics: perFile[path],
+  }));
+}
+
+function buildRecommendations(report: FinalReport, findings: Finding[]): string[] {
+  const reportRecommendations = Array.isArray(report.recommendations)
+    ? report.recommendations.filter((item): item is string => typeof item === "string")
+    : [];
+  return [...reportRecommendations, ...findings.map((finding) => finding.recommendation).filter((item): item is string => Boolean(item))]
+    .filter((recommendation, index, values) => values.indexOf(recommendation) === index);
+}
+
+function buildComparisonData(comparison: Record<string, unknown>, quality: QualitySummary | undefined, reanalysis: QualitySummary | undefined) {
+  const hasReanalysis = Boolean(reanalysis && Object.keys(reanalysis).length > 0);
+  const beforeScore = numberOf(comparison.quality_score_before) ?? (hasReanalysis ? numberOf(quality?.quality_score) : undefined);
+  const afterScore = numberOf(comparison.quality_score_after) ?? (hasReanalysis ? numberOf(reanalysis?.quality_score) : undefined);
+  const beforeFindings = numberOf(comparison.findings_before) ?? (hasReanalysis ? numberOf(quality?.total_findings) : undefined);
+  const afterFindings = numberOf(comparison.findings_after) ?? (hasReanalysis ? numberOf(reanalysis?.total_findings) : undefined);
+  return {
+    beforeScore,
+    afterScore,
+    beforeFindings,
+    afterFindings,
+    reported: Object.keys(comparison).length > 0 || hasReanalysis,
+    improvementScore: beforeScore !== undefined && afterScore !== undefined ? afterScore - beforeScore : undefined,
+    improvementFindings: beforeFindings !== undefined && afterFindings !== undefined ? beforeFindings - afterFindings : undefined,
+  };
+}
+
+function buildStageRows(stageHistory: Record<string, unknown>[]) {
+  return PIPELINE.map((stage) => {
+    const matching = stageHistory.filter((entry) => stage.keys.includes(stageKey(entry.stage)));
+    const current = matching[matching.length - 1];
+    const status = stageStatusLabel(current?.status);
+    return { ...stage, status, detail: safeText(current?.message) ?? safeText(current?.error) };
+  });
+}
+
+function buildValidationReasons(validation: Record<string, unknown>, sandbox: Record<string, unknown>, errors: Array<{ agent: string; message: string }>, failed: boolean): string[] {
+  const validationError = safeText(validation.error);
+  const sandboxError = safeText(sandbox.error);
+  return [validationError, sandboxError, ...(failed ? errors.map((error) => `${error.agent}: ${error.message}`) : [])]
+    .filter((reason, index, values): reason is string => Boolean(reason) && values.indexOf(reason) === index);
+}
+
+function getToolResult(tool: string, runs: QualitySummary["tool_runs"], results: QualitySummary["tool_results"]) {
+  const run = runs?.find((item) => item.tool.toLowerCase() === tool);
+  const resultRecord = recordOf(results?.[tool]);
+  const status = run?.status ?? safeText(resultRecord.status);
+  const unavailable = run?.available === false || resultRecord.available === false || status === "skipped" || status === "not_run";
+  const findingCount = typeof run?.finding_count === "number" ? run.finding_count : numberOf(resultRecord.finding_count);
+  const statusText = safeText(status);
+  return { status: unavailable || !statusText ? "Not analyzed" : statusDisplay(statusText), findingCount };
 }
 
 export function AnalysisReport({ result, sourceFiles, completedAt, onViewFile }: Readonly<AnalysisReportProps>) {
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const report = result.final_report;
   const rawReport = recordOf(report);
-  const findings = toFindings(result.findings) ?? toFindings(rawReport.findings) ?? [];
-  const hasFindingData = result.findings_reported ?? (Array.isArray(result.findings) || Array.isArray(rawReport.findings));
-  const reportSeverityCounts = recordOf(recordOf(report.findings_summary).by_severity);
-  const counts = hasFindingData ? severityCounts(findings) : {
-    critical: numberOf(reportSeverityCounts.critical),
-    high: numberOf(reportSeverityCounts.high),
-    medium: numberOf(reportSeverityCounts.medium),
-    low: numberOf(reportSeverityCounts.low),
-    info: numberOf(reportSeverityCounts.info),
-  };
+  const { findings, hasFindingData, counts } = getFindingData(result, report, rawReport);
   const quality = result.quality_summary ?? report.quality_summary;
   const perFile = quality?.per_file ?? {};
-  const stageHistory = toList(result.stage_history) ?? toList(report.stage_history) ?? [];
+  const stageHistory = useMemo(
+    () => toList(result.stage_history) ?? toList(report.stage_history) ?? [],
+    [result.stage_history, report.stage_history],
+  );
   const attempts = toList(result.repair_attempts) ?? toList(report.repair_attempts) ?? toList(recordOf(report.workflow_summary).repair_attempts);
   const prioritized = toFindings(result.prioritized_findings) ?? toFindings(report.prioritized_findings);
   const validation = recordOf(result.validation_results ?? report.validation_results);
   const sandbox = recordOf(result.sandbox_result ?? report.sandbox_result);
   const comparison = recordOf(result.comparison ?? report.comparison);
   const reanalysisSummary = result.reanalysis_summary ?? report.reanalysis_summary;
-  const agentErrors = toList(result.agent_errors) ?? toList(report.agent_errors) ?? [];
+  const agentData = getAgentData(result, report, rawReport, findings);
+  const {
+    securityFindings,
+    resourceFindings,
+    securityError,
+    resourceError,
+    securityReported: securityDataReported,
+    resourceReported: resourceDataReported,
+    securityTools,
+  } = agentData;
+  const {
+    beforeScore: comparisonBeforeScore,
+    afterScore: comparisonAfterScore,
+    beforeFindings: comparisonBeforeFindings,
+    afterFindings: comparisonAfterFindings,
+    reported: comparisonReported,
+    improvementScore,
+    improvementFindings,
+  } = buildComparisonData(comparison, quality, reanalysisSummary);
   const reportedValidationStatus = result.validation_status ?? report.validation_status;
   const validationStatus = reportedValidationStatus === "pending" && report.analysis_checks?.final_validation === false
     ? "not_run"
     : reportedValidationStatus;
   const qualityScore = numberOf(quality?.quality_score) ?? numberOf(quality?.quality_gate?.overall_score);
   const criticalOrHigh = (counts.critical ?? 0) + (counts.high ?? 0);
-  const qualityToolRuns = quality?.tool_runs ?? [];
-  const qualityToolResults = quality?.tool_results ?? {};
-  const agentErrorSummary = agentErrors.map((error) => ({ agent: safeText(error.agent) ?? "Agent", message: safeText(error.error) ?? "Error detail not available" }));
-  const matchingError = (names: string[]) => agentErrorSummary.find((error) => names.some((name) => error.agent.toLowerCase().includes(name)));
-  const securityFindings = toFindings(result.security_findings) ?? toFindings(report.security_findings) ?? findings.filter((finding) => finding.category === "security");
-  const resourceFindings = toFindings(result.resource_findings) ?? toFindings(report.resource_findings) ?? findings.filter((finding) => finding.category === "resource" || finding.category === "bug");
-  const securityError = matchingError(["security"]);
-  const resourceError = matchingError(["bug", "resource"]);
-  const securityDataReported = !securityError && (Array.isArray(result.security_findings) || Array.isArray(report.security_findings) || findings.some((finding) => finding.category === "security"));
-  const resourceDataReported = !resourceError && (Array.isArray(result.resource_findings) || Array.isArray(report.resource_findings) || findings.some((finding) => finding.category === "resource" || finding.category === "bug"));
-  const securityTools = toList(result.security_tool_runs) ?? toList(rawReport.security_tool_runs) ?? [];
-  const filePaths = new Set<string>([
-    ...sourceFiles.map((file) => file.path),
-    ...Object.keys(perFile),
-    ...findings.map((finding) => finding.file),
-  ]);
-  const fileRows = [...filePaths].sort((first, second) => first.localeCompare(second)).map((path) => {
-    const source = sourceFiles.find((file) => file.path === path);
-    const fileFindings = findings.filter((finding) => finding.file === path);
-    return { path, source, findings: fileFindings, metrics: perFile[path] };
-  });
+  const fileRows = buildFileRows(sourceFiles, perFile, findings);
   const selectedFile = fileRows.find((file) => file.path === selectedFilePath);
-  const recommendations = [
-    ...(Array.isArray(report.recommendations) ? report.recommendations.filter((item): item is string => typeof item === "string") : []),
-    ...findings.map((finding) => finding.recommendation).filter((item): item is string => Boolean(item)),
-  ].filter((recommendation, index, values) => values.indexOf(recommendation) === index);
-  const hasReanalysis = Boolean(reanalysisSummary && Object.keys(reanalysisSummary).length > 0);
-  const comparisonBeforeScore = numberOf(comparison.quality_score_before) ?? (hasReanalysis ? numberOf(quality?.quality_score) : undefined);
-  const comparisonAfterScore = numberOf(comparison.quality_score_after) ?? (hasReanalysis ? numberOf(reanalysisSummary?.quality_score) : undefined);
-  const comparisonBeforeFindings = numberOf(comparison.findings_before) ?? (hasReanalysis ? numberOf(quality?.total_findings) : undefined);
-  const comparisonAfterFindings = numberOf(comparison.findings_after) ?? (hasReanalysis ? numberOf(reanalysisSummary?.total_findings) : undefined);
-  const comparisonReported = Object.keys(comparison).length > 0 || hasReanalysis;
-  const improvementScore = comparisonBeforeScore !== undefined && comparisonAfterScore !== undefined ? comparisonAfterScore - comparisonBeforeScore : undefined;
-  const improvementFindings = comparisonBeforeFindings !== undefined && comparisonAfterFindings !== undefined ? comparisonBeforeFindings - comparisonAfterFindings : undefined;
+  const recommendations = buildRecommendations(report, findings);
 
-  const stageRows = useMemo(() => PIPELINE.map((stage) => {
-    const matching = stageHistory.filter((entry) => stage.keys.includes(stageKey(entry.stage)));
-    const current = matching[matching.length - 1];
-    const status = stageStatusLabel(current?.status);
-    return { ...stage, status, detail: safeText(current?.message) ?? safeText(current?.error) };
-  }), [stageHistory]);
+  const stageRows = useMemo(() => buildStageRows(stageHistory), [stageHistory]);
 
-  const validationReasons = [
-    safeText(validation.error),
-    safeText(sandbox.error),
-    ...agentErrorSummary.filter(() => validationStatus === "failed").map((error) => `${error.agent}: ${error.message}`),
-  ].filter((reason, index, values): reason is string => Boolean(reason) && values.indexOf(reason) === index);
+  const validationReasons = buildValidationReasons(validation, sandbox, agentData.errorSummary, validationStatus === "failed");
 
-  let explanation = "The workflow did not return a validation explanation.";
-  if (validationStatus === "passed") {
-    explanation = findings.length === 0 ? "Validation passed and no findings were returned." : `Validation passed with ${findings.length} finding${findings.length === 1 ? "" : "s"} returned for review.`;
-  } else if (validationStatus === "failed") {
-    explanation = validationReasons[0]
-      ? `Validation did not pass because the workflow reported: ${validationReasons[0]}`
-      : criticalOrHigh > 0
-        ? `Validation failed with ${counts.critical} critical and ${counts.high} high-severity finding${criticalOrHigh === 1 ? "" : "s"}.`
-        : "The workflow reported a failed validation. No specific validation error was returned.";
-  } else if (validationStatus === "pending") {
-    explanation = "This workflow is still in progress; a final validation decision has not been returned.";
-  } else if (validationStatus === "not_run") {
-    explanation = "Final validation was not run for this analysis. Review the available analyzer results.";
-  }
-
-  function toolResult(tool: string) {
-    const run = qualityToolRuns.find((item) => item.tool.toLowerCase() === tool);
-    const resultRecord = recordOf(qualityToolResults[tool]);
-    const status = run?.status ?? safeText(resultRecord.status);
-    const unavailable = run?.available === false || resultRecord.available === false || status === "skipped" || status === "not_run";
-    const findingCount = typeof run?.finding_count === "number" ? run.finding_count : numberOf(resultRecord.finding_count);
-    const statusText = safeText(status);
-    return { status: unavailable ? "Not analyzed" : statusText ? statusDisplay(statusText) : "Not analyzed", findingCount };
-  }
+  const explanation = validationExplanation(validationStatus, findings.length, validationReasons, counts);
 
   return (
     <article className="analysis-report" id="analysis-report" aria-label="Code validation analysis report">
@@ -234,7 +351,7 @@ export function AnalysisReport({ result, sourceFiles, completedAt, onViewFile }:
       </section>
 
       <section className={`report-section report-explanation report-explanation--${validationClass(validationStatus)}`} aria-labelledby="report-explanation-heading">
-        <div className="report-section-heading"><div><p className="report-eyebrow">02 · VALIDATION RESULT</p><h2 id="report-explanation-heading">{validationStatus === "not_run" ? "Validation not run" : `Why did validation ${validationStatus === "passed" ? "pass" : validationStatus === "failed" ? "fail" : "stop"}?`}</h2></div></div>
+        <div className="report-section-heading"><div><p className="report-eyebrow">02 · VALIDATION RESULT</p><h2 id="report-explanation-heading">{validationHeading(validationStatus)}</h2></div></div>
         <p className="report-explanation__lead">{explanation}</p>
         <div className="report-explanation__facts">
           <p><strong>Critical/high-risk findings:</strong> {hasFindingData ? `${criticalOrHigh} returned` : "Not available"}</p>
@@ -262,49 +379,40 @@ export function AnalysisReport({ result, sourceFiles, completedAt, onViewFile }:
 
       <section className="report-section" aria-labelledby="report-tools-heading">
         <div className="report-section-heading"><div><p className="report-eyebrow">05 · TOOL ANALYSIS</p><h2 id="report-tools-heading">Analyzer results</h2></div></div>
-        <div className="report-table-wrap"><table className="report-table"><thead><tr><th>Tool</th><th>Status</th><th>Findings</th></tr></thead><tbody>{TOOLS.map((tool) => { const outcome = toolResult(tool); return <tr key={tool}><th scope="row">{tool[0].toUpperCase() + tool.slice(1)}</th><td><span className={`report-tool-status report-tool-status--${outcome.status === "Completed" || outcome.status === "Passed" ? "completed" : outcome.status === "Failed" ? "failed" : "unknown"}`}>{outcome.status}</span></td><td>{display(outcome.findingCount)}</td></tr>; })}</tbody></table></div>
+        <div className="report-table-wrap"><table className="report-table"><thead><tr><th>Tool</th><th>Status</th><th>Findings</th></tr></thead><tbody>{TOOLS.map((tool) => { const outcome = getToolResult(tool, quality?.tool_runs, quality?.tool_results); return <tr key={tool}><th scope="row">{tool[0].toUpperCase() + tool.slice(1)}</th><td><span className={`report-tool-status report-tool-status--${toolStatusClass(outcome.status)}`}>{outcome.status}</span></td><td>{display(outcome.findingCount)}</td></tr>; })}</tbody></table></div>
       </section>
 
       <section className="report-section" aria-labelledby="report-files-heading">
         <div className="report-section-heading"><div><p className="report-eyebrow">06 · FILE ANALYSIS</p><h2 id="report-files-heading">Files and findings</h2></div><p>{fileRows.length} file{fileRows.length === 1 ? "" : "s"} available in this report</p></div>
-        {fileRows.length === 0 ? <p className="report-unavailable">File-level analysis data was not returned.</p> : <div className="report-table-wrap"><table className="report-table report-file-table"><thead><tr><th>File</th><th>Findings</th><th>Quality score</th><th>Status</th><th>Details</th></tr></thead><tbody>{fileRows.map((file) => { const metrics = file.metrics; const fileStatus = safeText(metrics?.status) ?? (file.findings.length > 0 ? "Findings returned" : hasFindingData ? "No findings returned" : "Not available"); return <tr key={file.path}><th scope="row">{safeEvidence(file.path)}</th><td>{file.findings.length}</td><td>{display(numberOf(metrics?.quality_score))}</td><td>{fileStatus}</td><td><button className="report-text-button" type="button" onClick={() => setSelectedFilePath(selectedFilePath === file.path ? null : file.path)} aria-expanded={selectedFilePath === file.path}>{selectedFilePath === file.path ? "Hide" : "View file"}</button></td></tr>; })}</tbody></table></div>}
+        <FileAnalysisTable fileRows={fileRows} hasFindingData={hasFindingData} selectedFilePath={selectedFilePath} onSelectFile={setSelectedFilePath} />
         {selectedFile && <FileDetail path={selectedFile.path} source={selectedFile.source} findings={selectedFile.findings} onViewFile={onViewFile} />}
       </section>
 
       <section className="report-section" aria-labelledby="report-findings-heading">
-        <div className="report-section-heading"><div><p className="report-eyebrow">07 · FINDING DETAILS</p><h2 id="report-findings-heading">What needs attention</h2></div><p>{hasFindingData ? `${findings.length} finding${findings.length === 1 ? "" : "s"} returned` : "Finding data not returned"}</p></div>
-        {!hasFindingData ? <p className="report-unavailable">Finding details are not available for this run.</p> : findings.length === 0 ? <p className="report-empty">No findings were returned by the available analyzers.</p> : <div className="report-finding-list">{[...findings].sort((first, second) => severityRank(first.severity) - severityRank(second.severity) || first.file.localeCompare(second.file)).map((finding) => <FindingDetail key={finding.finding_id} finding={finding} source={sourceFiles.find((file) => file.path === finding.file)} onViewFile={onViewFile} />)}</div>}
+        <FindingDetailsSection findings={findings} hasFindingData={hasFindingData} sourceFiles={sourceFiles} onViewFile={onViewFile} />
       </section>
 
       <section className="report-section" aria-labelledby="report-priority-heading">
-        <div className="report-section-heading"><div><p className="report-eyebrow">08 · FIX PRIORITY</p><h2 id="report-priority-heading">Work through findings</h2></div><p>{prioritized ? "Orchestrator priority data" : "Grouped by reported severity; no separate priority list was returned."}</p></div>
-        <div className="report-priority-grid">{SEVERITIES.map((severity) => { const items = (prioritized ?? findings).filter((finding) => finding.severity === severity); return <section className={`report-priority-card report-severity--${severity}`} key={severity}><h3>{severityLabel(severity)}</h3><strong>{prioritized || hasFindingData ? items.length : "Not available"}</strong>{items.length === 0 && (prioritized || hasFindingData) ? <p>No issues</p> : <ul>{items.map((finding) => <li key={finding.finding_id}>{safeEvidence(finding.file)} · {safeEvidence(finding.issue)}</li>)}</ul>}</section>; })}</div>
+        <PrioritySection prioritized={prioritized} findings={findings} hasFindingData={hasFindingData} />
       </section>
 
-      <section className="report-section report-optional-analysis" aria-labelledby="report-security-heading">
-        <div className="report-section-heading"><div><p className="report-eyebrow">09 · SECURITY</p><h2 id="report-security-heading">Security analysis</h2></div></div>
-        <p className="report-availability">{securityError ? `Not analyzed: ${securityError.message}` : securityDataReported ? `${securityFindings.length} security finding${securityFindings.length === 1 ? "" : "s"} returned.` : "Security analysis was not run or its results were not returned for this validation."}</p>
-        {securityDataReported && <><SeveritySummary counts={severityCounts(securityFindings)} known /><p><strong>Security tools:</strong> {securityTools.length > 0 ? securityTools.map((tool) => `${safeText(tool.tool) ?? "Tool"} (${safeText(tool.status) ?? "status not reported"})`).join(", ") : "Not available"}</p>{securityFindings.map((finding) => <p className="report-mini-finding" key={finding.finding_id}>{safeEvidence(finding.severity)} · {safeEvidence(finding.issue)} · {safeEvidence(finding.file)}</p>)}</>}
-      </section>
-
-      <section className="report-section report-optional-analysis" aria-labelledby="report-resource-heading">
-        <div className="report-section-heading"><div><p className="report-eyebrow">10 · BUGS &amp; RESOURCES</p><h2 id="report-resource-heading">Bug and resource analysis</h2></div></div>
-        <p className="report-availability">{resourceError ? `Not analyzed: ${resourceError.message}` : resourceDataReported ? `${resourceFindings.length} bug/resource finding${resourceFindings.length === 1 ? "" : "s"} returned.` : "Bug and resource analysis was not run or its results were not returned for this validation."}</p>
-        {resourceDataReported && <div className="report-resource-grid"><Metric label="Potential bugs" value={resourceFindings.filter((finding) => finding.category === "bug").length} /><Metric label="Resource issues" value={resourceFindings.filter((finding) => finding.category === "resource").length} /><Metric label="Performance issues" value={resourceFindings.filter((finding) => /performance|slow|inefficient/i.test(`${finding.category} ${finding.subcategory ?? ""} ${finding.issue}`)).length} /><Metric label="Error-handling issues" value={resourceFindings.filter((finding) => /error.handling|exception|uncaught|failure path/i.test(`${finding.subcategory ?? ""} ${finding.issue} ${finding.description}`)).length} /></div>}
-      </section>
+      <SecuritySection error={securityError} reported={securityDataReported} findings={securityFindings} tools={securityTools} />
+      <ResourceSection error={resourceError} reported={resourceDataReported} findings={resourceFindings} />
 
       <section className="report-section" aria-labelledby="report-repair-heading">
         <div className="report-section-heading"><div><p className="report-eyebrow">11 · REPAIR HISTORY</p><h2 id="report-repair-heading">Repair attempts</h2></div></div>
-        {attempts === undefined ? <p className="report-unavailable">Repair attempt history was not returned by the workflow.</p> : attempts.length === 0 ? <p className="report-empty">{stageRows.find((stage) => stage.label === "Repair")?.status === "Skipped" ? "No repair was required." : "No repair attempts were returned."}</p> : <ol className="report-attempt-list">{attempts.map((attempt, index) => <li key={`${safeText(attempt.attempt_id) ?? "attempt"}-${index}`}><div className="report-attempt-heading"><h3>Attempt {safeText(attempt.iteration) ?? index + 1}</h3><span>{safeText(attempt.outcome) ?? safeText(attempt.status) ?? "Status not available"}</span></div><dl><Meta label="Mode" value={safeText(attempt.mode)} /><Meta label="Files changed" value={Array.isArray(attempt.changed_files) ? attempt.changed_files.length : undefined} /><Meta label="Findings detected" value={numberOf(attempt.findings_detected)} /><Meta label="Validation" value={safeText(recordOf(attempt.validation).status) ?? safeText(attempt.validation_status)} /></dl>{safeText(attempt.error) && <p className="report-availability">{safeText(attempt.error)}</p>}</li>)}</ol>}
+        <RepairHistorySection attempts={attempts} repairSkipped={stageRows.find((stage) => stage.label === "Repair")?.status === "Skipped"} />
       </section>
 
       <section className="report-section" aria-labelledby="report-comparison-heading">
         <div className="report-section-heading"><div><p className="report-eyebrow">12 · BEFORE / AFTER</p><h2 id="report-comparison-heading">Re-analysis comparison</h2></div></div>
-        {!comparisonReported || (comparisonBeforeFindings === undefined && comparisonAfterFindings === undefined && comparisonBeforeScore === undefined && comparisonAfterScore === undefined) ? <p className="report-unavailable">Before/after comparison data was not returned for this run.</p> : <><div className="report-comparison-grid"><ComparisonColumn title="Before repair" qualityScore={comparisonBeforeScore} findingCount={comparisonBeforeFindings} severity={recordOf(comparison.findings_by_severity_before)} /><ComparisonColumn title="After repair" qualityScore={comparisonAfterScore} findingCount={comparisonAfterFindings} severity={recordOf(comparison.findings_by_severity_after)} /></div>{improvementScore !== undefined && <p className="report-improvement">Quality score change: {improvementScore > 0 ? "+" : ""}{improvementScore}</p>}{improvementFindings !== undefined && <p className="report-improvement">Finding reduction: {improvementFindings > 0 ? "-" : improvementFindings < 0 ? "+" : ""}{Math.abs(improvementFindings)}</p>}</>}
+        <ComparisonSection reported={comparisonReported} comparison={comparison} beforeFindings={comparisonBeforeFindings} afterFindings={comparisonAfterFindings} beforeScore={comparisonBeforeScore} afterScore={comparisonAfterScore} improvementFindings={improvementFindings} improvementScore={improvementScore} />
       </section>
 
+      <AiRecommendationSection report={report} />
+
       <section className="report-section report-recommendation" aria-labelledby="report-recommendation-heading">
-        <div className="report-section-heading"><div><p className="report-eyebrow">13 · NEXT STEPS</p><h2 id="report-recommendation-heading">Final recommendation</h2></div><span className={`report-status report-status--${validationClass(validationStatus)}`}>{validationStatus === "passed" ? "REVIEW RESULTS" : validationStatus === "failed" ? "REVIEW REQUIRED" : validationLabel(validationStatus)}</span></div>
+        <div className="report-section-heading"><div><p className="report-eyebrow">13 · NEXT STEPS</p><h2 id="report-recommendation-heading">Final recommendation</h2></div><span className={`report-status report-status--${validationClass(validationStatus)}`}>{recommendationStatusLabel(validationStatus)}</span></div>
         <p>{nextStep(validationStatus, validationReasons, recommendations, findings)}</p>
         {recommendations.length > 0 ? <><h3>Analyzer recommendations</h3><ol>{recommendations.map((recommendation, index) => <li key={`${index}-${recommendation}`}>{safeEvidence(recommendation)}</li>)}</ol></> : <p>No analyzer recommendations were returned.</p>}
       </section>
@@ -313,12 +421,154 @@ export function AnalysisReport({ result, sourceFiles, completedAt, onViewFile }:
   );
 }
 
+function FileAnalysisTable({ fileRows, hasFindingData, selectedFilePath, onSelectFile }: Readonly<{
+  fileRows: ReportFileRow[];
+  hasFindingData: boolean;
+  selectedFilePath: string | null;
+  onSelectFile: (path: string | null) => void;
+}>) {
+  if (fileRows.length === 0) return <p className="report-unavailable">File-level analysis data was not returned.</p>;
+  return <div className="report-table-wrap"><table className="report-table report-file-table"><thead><tr><th>File</th><th>Findings</th><th>Quality score</th><th>Status</th><th>Details</th></tr></thead><tbody>{fileRows.map((file) => {
+    const metrics = file.metrics;
+    let fileStatus = safeText(metrics?.status);
+    if (!fileStatus && file.findings.length > 0) fileStatus = "Findings returned";
+    if (!fileStatus && hasFindingData) fileStatus = "No findings returned";
+    if (!fileStatus) fileStatus = "Not available";
+    const selected = selectedFilePath === file.path;
+    return <tr key={file.path}><th scope="row">{safeEvidence(file.path)}</th><td>{file.findings.length}</td><td>{display(numberOf(metrics?.quality_score))}</td><td>{fileStatus}</td><td><button className="report-text-button" type="button" onClick={() => onSelectFile(selected ? null : file.path)} aria-expanded={selected}>{selected ? "Hide" : "View file"}</button></td></tr>;
+  })}</tbody></table></div>;
+}
+
+function PrioritySection({ prioritized, findings, hasFindingData }: Readonly<{
+  prioritized?: Finding[];
+  findings: Finding[];
+  hasFindingData: boolean;
+}>) {
+  const source = prioritized ?? findings;
+  const sourceLabel = prioritized ? "Orchestrator priority data" : "Grouped by reported severity; no separate priority list was returned.";
+  return <>
+    <div className="report-section-heading"><div><p className="report-eyebrow">08 · FIX PRIORITY</p><h2 id="report-priority-heading">Work through findings</h2></div><p>{sourceLabel}</p></div>
+    <div className="report-priority-grid">{SEVERITIES.map((severity) => <PriorityCard key={severity} severity={severity} findings={source.filter((finding) => finding.severity === severity)} known={Boolean(prioritized) || hasFindingData} />)}</div>
+  </>;
+}
+
+function PriorityCard({ severity, findings, known }: Readonly<{ severity: Severity; findings: Finding[]; known: boolean }>) {
+  const count = known ? findings.length : "Not available";
+  const items = findings.map((finding) => <li key={finding.finding_id}>{safeEvidence(finding.file)} · {safeEvidence(finding.issue)}</li>);
+  const content = findings.length === 0 && known ? <p>No issues</p> : <ul>{items}</ul>;
+  return <section className={`report-priority-card report-severity--${severity}`}><h3>{severityLabel(severity)}</h3><strong>{count}</strong>{content}</section>;
+}
+
+function SecuritySection({ error, reported, findings, tools }: Readonly<{
+  error?: { message: string };
+  reported: boolean;
+  findings: Finding[];
+  tools: Record<string, unknown>[];
+}>) {
+  const toolText = tools.length > 0
+    ? tools.map((tool) => `${safeText(tool.tool) ?? "Tool"} (${safeText(tool.status) ?? "status not reported"})`).join(", ")
+    : "Not available";
+  return <section className="report-section report-optional-analysis" aria-labelledby="report-security-heading">
+    <div className="report-section-heading"><div><p className="report-eyebrow">09 · SECURITY</p><h2 id="report-security-heading">Security analysis</h2></div></div>
+    <p className="report-availability">{availabilityMessage("Security", error, reported, findings.length)}</p>
+    {reported && <><SeveritySummary counts={severityCounts(findings)} known /><p><strong>Security tools:</strong> {toolText}</p>{findings.map((finding) => <p className="report-mini-finding" key={finding.finding_id}>{safeEvidence(finding.severity)} · {safeEvidence(finding.issue)} · {safeEvidence(finding.file)}</p>)}</>}
+  </section>;
+}
+
+function ResourceSection({ error, reported, findings }: Readonly<{
+  error?: { message: string };
+  reported: boolean;
+  findings: Finding[];
+}>) {
+  return <section className="report-section report-optional-analysis" aria-labelledby="report-resource-heading">
+    <div className="report-section-heading"><div><p className="report-eyebrow">10 · BUGS &amp; RESOURCES</p><h2 id="report-resource-heading">Bug and resource analysis</h2></div></div>
+    <p className="report-availability">{availabilityMessage("Bug/resource", error, reported, findings.length)}</p>
+    {reported && <div className="report-resource-grid"><Metric label="Potential bugs" value={findings.filter((finding) => finding.category === "bug").length} /><Metric label="Resource issues" value={findings.filter((finding) => finding.category === "resource").length} /><Metric label="Performance issues" value={findings.filter((finding) => /performance|slow|inefficient/i.test(`${finding.category} ${finding.subcategory ?? ""} ${finding.issue}`)).length} /><Metric label="Error-handling issues" value={findings.filter((finding) => /error.handling|exception|uncaught|failure path/i.test(`${finding.subcategory ?? ""} ${finding.issue} ${finding.description}`)).length} /></div>}
+  </section>;
+}
+
+function AiRecommendationSection({ report }: Readonly<{ report: FinalReport }>) {
+  const status = report.ai_recommendations_status;
+  if (!status || status.status === "disabled") return null;
+  const content = status.status === "completed"
+    ? <AiRecommendationContent report={report} />
+    : <p className="report-availability">{status.message ?? "The AI report/recommendation stage did not return results."}</p>;
+  return <section className="report-section" aria-labelledby="report-ai-heading">
+    <div className="report-section-heading"><div><p className="report-eyebrow">AI REVIEW</p><h2 id="report-ai-heading">Report and recommendations</h2></div><span>{status.status.toUpperCase()}</span></div>
+    {content}
+  </section>;
+}
+
+function AiRecommendationContent({ report }: Readonly<{ report: FinalReport }>) {
+  const issues = report.code_report?.issues ?? [];
+  const fixes = report.recommendation_report?.fixes ?? [];
+  const suggestions = report.recommendation_report?.suggestions ?? [];
+  return <>
+    <p className="report-availability">Independent Gemini review of {report.code_report?.scanned_files ?? 0} submitted files. Suggested changes are review-only and have not been applied.</p>
+    <h3>Additional issues</h3>
+    {issues.length > 0 ? <ol className="report-ai-list">{issues.map((issue, index) => <li key={`${issue.file_path}-${issue.line_number}-${index}`}><strong>{safeEvidence(issue.issue_type)}</strong> · {safeEvidence(issue.file_path)}:{issue.line_number}<p>{safeEvidence(issue.description)}</p></li>)}</ol> : <p className="report-empty">No additional issues were returned.</p>}
+    <h3>Proposed fixes</h3>
+    {fixes.length > 0 ? <ol className="report-ai-list">{fixes.map((fix, index) => <li key={`${fix.file_path}-${fix.line_number}-${index}`}><strong>{safeEvidence(fix.file_path)}:{fix.line_number}</strong><p>{safeEvidence(fix.explanation)}</p><div className="report-ai-code"><span>Original</span><pre><code>{safeEvidence(fix.original_code)}</code></pre></div><div className="report-ai-code"><span>Suggested</span><pre><code>{safeEvidence(fix.suggested_code)}</code></pre></div></li>)}</ol> : <p className="report-empty">No code fixes were returned.</p>}
+    <h3>Project suggestions</h3>
+    {suggestions.length > 0 ? <ul className="report-ai-list">{suggestions.map((suggestion, index) => <li key={`${suggestion.category}-${index}`}><strong>{safeEvidence(suggestion.category)}:</strong> {safeEvidence(suggestion.suggestion)}<p>{safeEvidence(suggestion.benefit)}</p></li>)}</ul> : <p className="report-empty">No project-level suggestions were returned.</p>}
+  </>;
+}
+
+function FindingDetailsSection({ findings, hasFindingData, sourceFiles, onViewFile }: Readonly<{
+  findings: Finding[];
+  hasFindingData: boolean;
+  sourceFiles: ProjectFile[];
+  onViewFile: (path: string) => void;
+}>) {
+  let content;
+  if (!hasFindingData) {
+    content = <p className="report-unavailable">Finding details are not available for this run.</p>;
+  } else if (findings.length === 0) {
+    content = <p className="report-empty">No findings were returned by the available analyzers.</p>;
+  } else {
+    content = <div className="report-finding-list">{[...findings].sort((first, second) => severityRank(first.severity) - severityRank(second.severity) || first.file.localeCompare(second.file)).map((finding) => <FindingDetail key={finding.finding_id} finding={finding} source={sourceFiles.find((file) => file.path === finding.file)} onViewFile={onViewFile} />)}</div>;
+  }
+  return <>
+    <div className="report-section-heading"><div><p className="report-eyebrow">07 · FINDING DETAILS</p><h2 id="report-findings-heading">What needs attention</h2></div><p>{findingSummary(hasFindingData, findings)}</p></div>
+    {content}
+  </>;
+}
+
+function RepairHistorySection({ attempts, repairSkipped }: Readonly<{ attempts?: Record<string, unknown>[]; repairSkipped: boolean }>) {
+  if (attempts === undefined) return <p className="report-unavailable">Repair attempt history was not returned by the workflow.</p>;
+  if (attempts.length === 0) return <p className="report-empty">{repairSkipped ? "No repair was required." : "No repair attempts were returned."}</p>;
+  return <ol className="report-attempt-list">{attempts.map((attempt, index) => <li key={`${safeText(attempt.attempt_id) ?? "attempt"}-${index}`}><div className="report-attempt-heading"><h3>Attempt {safeText(attempt.iteration) ?? index + 1}</h3><span>{safeText(attempt.outcome) ?? safeText(attempt.status) ?? "Status not available"}</span></div><dl><Meta label="Mode" value={safeText(attempt.mode)} /><Meta label="Files changed" value={Array.isArray(attempt.changed_files) ? attempt.changed_files.length : undefined} /><Meta label="Findings detected" value={numberOf(attempt.findings_detected)} /><Meta label="Validation" value={safeText(recordOf(attempt.validation).status) ?? safeText(attempt.validation_status)} /></dl>{safeText(attempt.error) && <p className="report-availability">{safeText(attempt.error)}</p>}</li>)}</ol>;
+}
+
+function ComparisonSection({ reported, comparison, beforeFindings, afterFindings, beforeScore, afterScore, improvementFindings, improvementScore }: Readonly<{
+  reported: boolean;
+  comparison: Record<string, unknown>;
+  beforeFindings?: number;
+  afterFindings?: number;
+  beforeScore?: number;
+  afterScore?: number;
+  improvementFindings?: number;
+  improvementScore?: number;
+}>) {
+  const hasComparisonValues = beforeFindings !== undefined || afterFindings !== undefined || beforeScore !== undefined || afterScore !== undefined;
+  if (!reported || !hasComparisonValues) return <p className="report-unavailable">Before/after comparison data was not returned for this run.</p>;
+  let findingSign = "";
+  if (improvementFindings !== undefined && improvementFindings > 0) findingSign = "-";
+  if (improvementFindings !== undefined && improvementFindings < 0) findingSign = "+";
+  return <>
+    <div className="report-comparison-grid"><ComparisonColumn title="Before repair" qualityScore={beforeScore} findingCount={beforeFindings} severity={recordOf(comparison.findings_by_severity_before)} /><ComparisonColumn title="After repair" qualityScore={afterScore} findingCount={afterFindings} severity={recordOf(comparison.findings_by_severity_after)} /></div>
+    {improvementScore !== undefined && <p className="report-improvement">Quality score change: {improvementScore > 0 ? "+" : ""}{improvementScore}</p>}
+    {improvementFindings !== undefined && <p className="report-improvement">Finding reduction: {findingSign}{Math.abs(improvementFindings)}</p>}
+  </>;
+}
+
 function Meta({ label, value, note }: Readonly<{ label: string; value?: string | number; note?: string }>) {
   return <div className="report-meta"><dt>{label}</dt><dd>{display(value)}</dd>{note && <small>{note}</small>}</div>;
 }
 
 function Metric({ label, value, tone }: Readonly<{ label: string; value?: string | number; tone?: string }>) {
-  return <div className={`report-metric${tone ? ` report-metric--${tone}` : ""}`}><span>{label}</span><strong>{display(value)}</strong></div>;
+  const className = ["report-metric", tone ? `report-metric--${tone}` : ""].filter(Boolean).join(" ");
+  return <div className={className}><span>{label}</span><strong>{display(value)}</strong></div>;
 }
 
 function SeveritySummary({ counts, known, large = false }: Readonly<{ counts: Record<Severity, number | undefined>; known: boolean; large?: boolean }>) {

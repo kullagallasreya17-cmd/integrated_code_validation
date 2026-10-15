@@ -10,6 +10,7 @@ export interface AnalysisCheckOptions {
   readonly complexity: boolean;
   readonly automatedRepair: boolean;
   readonly finalValidation: boolean;
+  readonly aiReportRecommendations: boolean;
 }
 
 export const DEFAULT_ANALYSIS_CHECKS: AnalysisCheckOptions = {
@@ -19,6 +20,7 @@ export const DEFAULT_ANALYSIS_CHECKS: AnalysisCheckOptions = {
   complexity: true,
   automatedRepair: false,
   finalValidation: false,
+  aiReportRecommendations: false,
 };
 
 export interface AnalysisConfiguration {

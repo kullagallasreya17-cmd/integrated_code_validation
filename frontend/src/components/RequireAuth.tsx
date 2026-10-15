@@ -11,10 +11,11 @@ interface RequireAuthProps {
 }
 
 export function RequireAuth({ children, roles, capability }: Readonly<RequireAuthProps>) {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAuth();
   const location = useLocation();
   const permitted = usePermission(capability ?? "viewProjects");
 
+  if (isLoading) return <main className="auth-loading" aria-live="polite">Checking your session…</main>;
   if (!isAuthenticated) return <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}${location.hash}` }} />;
   if ((capability && !permitted) || (roles && (!user || !roles.includes(user.role)))) return <Navigate to="/" replace />;
   return children ? <>{children}</> : <Outlet />;

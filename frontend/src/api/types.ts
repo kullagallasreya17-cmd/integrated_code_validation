@@ -103,13 +103,31 @@ export interface SandboxExecution {
 
 export interface Report {
   readonly project_id: string;
+  readonly run_id?: string;
+  readonly project_name?: string;
   readonly status?: RunStatus;
+  readonly validation_status?: ValidationStatus;
+  readonly started_at?: string;
+  readonly completed_at?: string;
   readonly findings?: Finding[];
+  readonly result?: Record<string, unknown>;
   readonly repairs?: RepairAttempt[];
   readonly validation?: ValidationResult;
   readonly recommendations?: string[];
   readonly report?: Record<string, unknown> | null;
   readonly [key: string]: unknown;
+}
+
+export interface PersistedHistoryItem {
+  readonly run_id: string;
+  readonly project_id: string;
+  readonly project_name: string;
+  readonly status: RunStatus;
+  readonly validation_status: ValidationStatus;
+  readonly started_at?: string;
+  readonly completed_at?: string;
+  readonly finding_count: number;
+  readonly retry_count: number;
 }
 
 export interface HistoryItem {
@@ -132,8 +150,6 @@ export interface User {
 }
 
 export interface AuthSession {
-  readonly access_token: string;
-  readonly token_type: string;
   readonly user: User;
 }
 

@@ -13,11 +13,13 @@ class Settings(BaseSettings):
     repair_service_url: str = "http://repair:8000"
     sandbox_service_url: str = "http://sandbox:8000"
     validation_service_url: str = "http://validation:8000"
+    report_recommendation_service_url: str = "http://report-recommendation:8000"
 
     agent_call_timeout_seconds: int = 60
     repair_call_timeout_seconds: int = 120
     sandbox_call_timeout_seconds: int = 60
     validation_call_timeout_seconds: int = 60
+    ai_report_timeout_seconds: int = 150
 
     max_retries: int = 3
     max_run_history: int = 100

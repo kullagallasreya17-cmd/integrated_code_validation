@@ -36,6 +36,7 @@ export interface FinalReport {
     readonly complexity?: boolean;
     readonly automated_repair?: boolean;
     readonly final_validation?: boolean;
+    readonly ai_report_recommendations?: boolean;
   };
   validation_status: ValidationStatus;
   retry_count: number;
@@ -51,6 +52,33 @@ export interface FinalReport {
   security_findings?: Finding[];
   resource_findings?: Finding[];
   recommendations?: string[];
+  code_report?: {
+    scanned_files: number;
+    issues: Array<{
+      file_path: string;
+      line_number: number;
+      issue_type: string;
+      description: string;
+    }>;
+  };
+  recommendation_report?: {
+    fixes: Array<{
+      file_path: string;
+      line_number: number;
+      original_code: string;
+      suggested_code: string;
+      explanation: string;
+    }>;
+    suggestions: Array<{
+      category: string;
+      suggestion: string;
+      benefit: string;
+    }>;
+  };
+  ai_recommendations_status?: {
+    status: "disabled" | "skipped" | "completed" | "failed";
+    message?: string;
+  };
   explanations?: Array<Record<string, unknown>>;
   repair_attempts?: Array<Record<string, unknown>>;
   stage_history?: Array<Record<string, unknown>>;
@@ -128,7 +156,7 @@ export interface WorkflowRunResponse {
   sandbox_result?: Record<string, unknown>;
   reanalysis_findings?: Finding[];
   reanalysis_summary?: QualitySummary;
-  comparison?: FinalReport["comparison"];
+  comparison?: NonNullable<FinalReport["comparison"]>;
   analysis_configuration?: {
     readonly sandbox_timeout_seconds: number;
     readonly memory_limit_mb: number;

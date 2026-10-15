@@ -42,7 +42,7 @@ export const api = {
     const projectId = started.project_id || payload.project_id;
 
     return new Promise((resolve, reject) => {
-      const source = new EventSource(`${apiBaseUrl()}/analysis/stream/${encodeURIComponent(projectId)}`);
+      const source = new EventSource(`${apiBaseUrl()}/analysis/stream/${encodeURIComponent(projectId)}`, { withCredentials: true });
       let settled = false;
       const timeout = window.setTimeout(() => finish(() => reject(new Error("Validation timed out while waiting for the orchestrator. You can retry the run."))), timeoutMs);
       const finish = (callback: () => void) => {

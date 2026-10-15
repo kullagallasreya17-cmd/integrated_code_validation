@@ -15,6 +15,8 @@ docker_client = docker.from_env()
 
 MAX_TIMEOUT = 30
 MAX_OUTPUT = 50000
+WORKSPACE_ROOT = os.getenv("SANDBOX_WORKSPACE_ROOT", "/sandbox-workspaces")
+WORKSPACE_VOLUME = os.getenv("SANDBOX_WORKSPACE_VOLUME", "coding-validation-sandbox-workspaces")
 
 
 class TestCase(BaseModel):
@@ -46,10 +48,13 @@ class CodeRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {
-        "status": "healthy",
-        "service": "sandbox-agent"
-    }
+    try:
+        docker_client.ping()
+    except Exception as error:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=503, detail="Docker execution engine is unavailable") from error
+    return {"status": "healthy", "service": "sandbox-agent"}
 
 
 def classify_error(status, stderr):
@@ -71,9 +76,7 @@ def classify_error(status, stderr):
 
 def run_code(code, stdin, timeout, execution_id, filename):
 
-    workspace = os.path.abspath(
-        os.path.join("sandbox_workspace", execution_id)
-    )
+    workspace = os.path.join(WORKSPACE_ROOT, execution_id)
 
     file_path = os.path.join(workspace, filename)
     input_path = os.path.join(workspace, "input.txt")
@@ -93,10 +96,10 @@ def run_code(code, stdin, timeout, execution_id, filename):
             command=[
                 "sh",
                 "-c",
-                f"python /sandbox/{filename} < /sandbox/input.txt"
+                f"python /sandbox/{execution_id}/{filename} < /sandbox/{execution_id}/input.txt"
             ],
             volumes={
-                workspace: {
+                WORKSPACE_VOLUME: {
                     "bind": "/sandbox",
                     "mode": "ro"
                 }

@@ -20,6 +20,9 @@ class WorkflowState(TypedDict, total=False):
     findings: list                # merged, aggregated findings (dicts)
     prioritized_findings: list
     explanations: list[dict]
+    code_report: dict
+    recommendation_report: dict
+    ai_recommendations_status: dict
     security_findings: list
     quality_findings: list
     quality_summary: dict

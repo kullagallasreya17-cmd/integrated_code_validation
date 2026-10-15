@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { apiClient } from "../api/client";
 
 export type AuthMode = "signin" | "signup" | "forgot" | "reset";
 
@@ -11,9 +12,15 @@ export type AuthFormValues = {
   remember: boolean;
 };
 
+type AgentServiceStatuses = Record<string, boolean>;
+
+function serviceBadgeStatus(statuses: AgentServiceStatuses | null, service: string): string {
+  if (!statuses) return "...";
+  return statuses[service] ? "ON" : "OFF";
+}
+
 interface AuthPageProps {
   readonly mode: AuthMode;
-  readonly mockMode: boolean;
   readonly localDemoEnabled: boolean;
   readonly busy: boolean;
   readonly message?: string;
@@ -21,7 +28,6 @@ interface AuthPageProps {
   readonly onModeChange: (mode: AuthMode) => void;
   readonly onSubmit: (values: AuthFormValues, mode: AuthMode) => void;
   readonly onLocalDemo: () => void;
-  readonly onGoogleSignIn: () => void;
 }
 
 function headingForMode(mode: AuthMode): string {
@@ -34,15 +40,14 @@ function headingForMode(mode: AuthMode): string {
   return headings[mode];
 }
 
-function introForMode(mode: AuthMode, mockMode: boolean, localDemoEnabled: boolean): string {
-  if (mode === "forgot") return mockMode ? "Demo mode only. No reset email will be sent." : "Password reset is unavailable until the authentication service is connected.";
-  if (mode === "reset") return mockMode ? "Demo mode only. The new password will not be saved." : "Password reset is unavailable until the authentication service is connected.";
-  if (mode === "signup") return mockMode ? "Demo account only. No account will be registered." : "Registration is unavailable until the authentication service is connected.";
-  if (!mockMode && localDemoEnabled) return "Account sign-in is not configured in this deployment. Use local demo access to enter the workspace.";
+function introForMode(mode: AuthMode): string {
+  if (mode === "forgot") return "Password recovery is not configured. No email will be sent.";
+  if (mode === "reset") return "Password reset is not configured. No password will be changed.";
+  if (mode === "signup") return "Create an account to save projects and analysis reports to your workspace.";
   return "Sign in to your Code Validation Agent account";
 }
 
-export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, error, onModeChange, onSubmit, onLocalDemo, onGoogleSignIn }: Readonly<AuthPageProps>) {
+export function AuthPage({ mode, localDemoEnabled, busy, message, error, onModeChange, onSubmit, onLocalDemo }: Readonly<AuthPageProps>) {
   const isSignup = mode === "signup";
   const isRecovery = mode === "forgot" || mode === "reset";
   const [showPassword, setShowPassword] = useState(false);
@@ -55,6 +60,15 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
     remember: true,
   });
   const [formError, setFormError] = useState("");
+  const [agentServices, setAgentServices] = useState<AgentServiceStatuses | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void apiClient.get<{ services?: AgentServiceStatuses }>("/api/system/public-agents")
+      .then((payload) => { if (active) setAgentServices(payload.services ?? {}); })
+      .catch(() => { if (active) setAgentServices({}); });
+    return () => { active = false; };
+  }, []);
 
   function handleFieldChange(key: keyof AuthFormValues, value: string | boolean) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -74,8 +88,8 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
       return;
     }
 
-    if ((isSignup || mode === "reset") && form.password.length < 8) {
-      setFormError("Use a password with at least 8 characters.");
+    if ((isSignup || mode === "reset") && form.password.length < 12) {
+      setFormError("Use a password with at least 12 characters.");
       return;
     }
 
@@ -151,13 +165,13 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
               </pre>
             </div>
             <div className="agent-badge agent-badge--orchestrator"><span className="agent-badge__index">ORCH</span><span>Workflow</span></div>
-            <div className="agent-badge agent-badge--code-analysis"><span className="agent-badge__index">ON</span><span>Code Analysis</span></div>
-            <div className="agent-badge agent-badge--security"><span className="agent-badge__index">OFF</span><span>Security</span></div>
-            <div className="agent-badge agent-badge--quality"><span className="agent-badge__index">ON</span><span>Code Quality</span></div>
-            <div className="agent-badge agent-badge--bug"><span className="agent-badge__index">OFF</span><span>Bug &amp; Resource</span></div>
-            <div className="agent-badge agent-badge--repair"><span className="agent-badge__index">OFF</span><span>Repair</span></div>
-            <div className="agent-badge agent-badge--validation"><span className="agent-badge__index">OFF</span><span>Validation</span></div>
-            <div className="agent-badge agent-badge--report"><span className="agent-badge__index">STAGE</span><span>Reporting</span></div>
+            <div className="agent-badge agent-badge--code-analysis"><span className="agent-badge__index" title="Code analysis runs inside the orchestrator">ORCH</span><span>Code Analysis</span></div>
+            <div className="agent-badge agent-badge--security"><span className="agent-badge__index" title="Security service status">{serviceBadgeStatus(agentServices, "security")}</span><span>Security</span></div>
+            <div className="agent-badge agent-badge--quality"><span className="agent-badge__index" title="Code Quality service status">{serviceBadgeStatus(agentServices, "code_quality")}</span><span>Code Quality</span></div>
+            <div className="agent-badge agent-badge--bug"><span className="agent-badge__index" title="Bug & Resource service status">{serviceBadgeStatus(agentServices, "bug_resource")}</span><span>Bug &amp; Resource</span></div>
+            <div className="agent-badge agent-badge--repair"><span className="agent-badge__index" title="Repair service status">{serviceBadgeStatus(agentServices, "repair")}</span><span>Repair</span></div>
+            <div className="agent-badge agent-badge--validation"><span className="agent-badge__index" title="Validation service status">{serviceBadgeStatus(agentServices, "validation")}</span><span>Validation</span></div>
+            <div className="agent-badge agent-badge--report"><span className="agent-badge__index" title="Report & Recommendation service status">{serviceBadgeStatus(agentServices, "report_recommendation")}</span><span>Reporting</span></div>
           </div>
 
         </section>
@@ -165,8 +179,8 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
         <section className="auth-card auth-card--reference auth-card__panel--form">
           <div className="auth-form__logo">&lt;/&gt;</div>
           <h2>{headingForMode(mode)}</h2>
-          <p className="auth-form__intro">{introForMode(mode, mockMode, localDemoEnabled)}</p>
-          {mockMode && <p className="auth-demo-notice">DEMO MODE · Credentials and reset flows are local demonstrations only.</p>}
+          <p className="auth-form__intro">{introForMode(mode)}</p>
+          {isSignup && <p className="auth-local-notice">New accounts receive Developer access.</p>}
           {error && <p className="auth-feedback-message" role="alert">{error}</p>}
           {formError && <p className="auth-feedback-message" role="alert">{formError}</p>}
           {message && <output className="auth-feedback-message">{message}</output>}
@@ -204,7 +218,7 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
                   type={showPassword ? "text" : "password"}
                   placeholder={isSignup ? "Create a strong password" : "Enter your password"}
                   required
-                  minLength={isSignup || mode === "reset" ? 8 : undefined}
+                  minLength={isSignup || mode === "reset" ? 12 : undefined}
                   autoComplete={mode === "signin" ? "current-password" : "new-password"}
                   value={form.password}
                   onChange={(event) => handleFieldChange("password", event.target.value)}
@@ -215,7 +229,7 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
               </span>
             </label>}
 
-            {(isSignup || mode === "reset") && <label className="field"><span>Confirm password</span><input type="password" required minLength={8} autoComplete="new-password" value={form.confirmPassword ?? ""} onChange={(event) => handleFieldChange("confirmPassword", event.target.value)} /></label>}
+            {(isSignup || mode === "reset") && <label className="field"><span>Confirm password</span><input type="password" required minLength={12} autoComplete="new-password" value={form.confirmPassword ?? ""} onChange={(event) => handleFieldChange("confirmPassword", event.target.value)} /></label>}
 
             {mode === "signin" && <div className="auth-row">
               <label className="remember-me">
@@ -229,16 +243,13 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
               <button type="button" className="inline-link" onClick={() => onModeChange("forgot")}>Forgot password?</button>
             </div>}
 
-            <button type="submit" className="btn btn--primary auth-submit" disabled={busy || (!mockMode && isRecovery)}>
-              {busy ? "Please wait..." : submitLabel(mode, mockMode)}{!busy && <span>→</span>}
+            <button type="submit" className="btn btn--primary auth-submit" disabled={busy || isRecovery}>
+              {busy ? "Please wait..." : submitLabel(mode)}{!busy && <span>→</span>}
             </button>
 
-            {mode === "signin" && <><div className="auth-divider"><span>or</span></div><button type="button" className="btn btn--secondary auth-google" onClick={onGoogleSignIn}><span className="google-mark" aria-hidden="true">G</span>Continue with Google</button></>}
-            {mode === "signin" && mockMode && <button type="button" className="btn btn--secondary auth-demo" disabled={busy} onClick={() => onSubmit({ fullName: "Demo Analyst", email: "demo@codevalidation.ai", password: "demo123", remember: true }, "signin")}>Use demo account</button>}
-            {mode === "signin" && !mockMode && localDemoEnabled && <><button type="button" className="btn btn--secondary auth-local-demo" onClick={onLocalDemo}>Continue in local demo</button><p className="auth-local-notice">Preview access only. This does not create or authenticate an account.</p></>}
+            {mode === "signin" && localDemoEnabled && <><div className="auth-divider"><span>or</span></div><button type="button" className="btn btn--secondary auth-local-demo" disabled={busy} onClick={onLocalDemo}>Continue in local demo</button><p className="auth-local-notice">Testing only. Local Demo uses a separate development-only server session.</p></>}
             {mode === "signin" && <p className="auth-switch">Don't have an account? <button type="button" className="inline-link" onClick={() => onModeChange("signup")}>Sign Up</button></p>}
             {mode === "signup" && <p className="auth-switch">Already have an account? <button type="button" className="inline-link" onClick={() => onModeChange("signin")}>Sign In</button></p>}
-            {mode === "forgot" && mockMode && <button type="button" className="btn btn--secondary auth-demo" onClick={() => onModeChange("reset")}>Open demo reset form</button>}
             {isRecovery && <p className="auth-switch"><button type="button" className="inline-link" onClick={() => onModeChange("signin")}>Back to Sign In</button></p>}
           </form>
         </section>
@@ -248,10 +259,10 @@ export function AuthPage({ mode, mockMode, localDemoEnabled, busy, message, erro
   );
 }
 
-function submitLabel(mode: AuthMode, mockMode: boolean): string {
+function submitLabel(mode: AuthMode): string {
   const labels: Record<AuthMode, string> = {
     signin: "Sign In",
-    signup: mockMode ? "Create demo account" : "Create account",
+    signup: "Create account",
     forgot: "Request password reset",
     reset: "Reset password",
   };

@@ -78,16 +78,27 @@ def test_validation_client_maps_validity_and_findings(monkeypatch):
 
 
 def test_repair_client_adapts_finding_response(monkeypatch):
-    client = StubAsyncClient(lambda _url, _body: {"fixed_code": "print('fixed')\n"})
+    client = StubAsyncClient(lambda _url, _body: {
+        "status": "completed",
+        "repairs": [{
+            "path": "main.py",
+            "original_code": "print('broken')\n",
+            "regenerated_code": "print('fixed')\n",
+            "changed": True,
+            "explanation": "Updated the output.",
+        }],
+        "unresolved_findings": [],
+        "validation_status": "syntax_and_ruff_checked",
+    })
     monkeypatch.setattr(repair_client.httpx, "AsyncClient", lambda **_kwargs: client)
 
     result = asyncio.run(repair_client.repair(
         "p1",
         {"main.py": "print('broken')\n"},
         [{"file": "main.py", "description": "Replace broken output", "severity": "high"}],
-        1,
     ))
 
-    assert client.requests[0][0].endswith("/analyze-fix")
-    assert client.requests[0][1]["severity"] == "high"
+    assert client.requests[0][0].endswith("/repair")
+    assert client.requests[0][1]["findings"][0]["severity"] == "high"
+    assert client.requests[0][1]["files"] == [{"path": "main.py", "content": "print('broken')\n"}]
     assert result["repaired_files"] == [{"path": "main.py", "content": "print('fixed')\n"}]

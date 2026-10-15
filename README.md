@@ -16,9 +16,10 @@ coding-validation-agent/
 │   ├── code-quality-service/     Ruff + Pylint + Radon (FastAPI)
 │   ├── security_service/         Bandit, Semgrep, and Gitleaks (FastAPI)
 │   ├── validation_service/       Python validation checks (FastAPI)
-│   ├── repair-service/           Fix & Regeneration container definition
-│   └── sandbox_service/          Isolated execution API (not enabled)
-├── app/                          Repair agent implementation
+│   ├── report-recommendation-service/ Gemini report and recommendation agents (FastAPI)
+│   ├── repair-service/           Fix & Regeneration microservice (FastAPI)
+│   └── sandbox_service/          Isolated execution API
+├── app/                          Legacy repair prototype (not used by Compose)
 ├── gateway/                     API entry point (FastAPI)
 ├── frontend/                     React + TypeScript + Vite UI
 ├── shared/schemas/                Common contracts (Finding, workflow, etc.)
@@ -27,12 +28,18 @@ coding-validation-agent/
                                     Validation, and Repair
 ```
 
-The orchestrator adapts the Security, Validation, and Repair agents' current
-per-file APIs to its workflow contracts. The Sandbox source is present but is
-not enabled in Compose because it requires access to the host Docker socket.
-Bug & Resource and Database & Reports implementations were not present on the
-team branches fetched for this integration, so those capabilities remain
-unavailable and are not represented as successful results.
+The Orchestrator is the only component that selects and invokes agents in the
+workflow. Its `repair` Compose dependency runs the Fix & Regeneration
+microservice from `services/repair-service`; the root `app/` prototype is not
+used by Compose. The Orchestrator adapts Security, Validation, Repair, Sandbox, and
+Report/Recommendation APIs to its workflow contracts. It owns workflow order,
+opt-in checks, progress, and result aggregation; report generation runs in its
+own internal service. The optional Gemini stage is explicitly selected per
+analysis; selected source files are sent to the configured Gemini model, and
+generated code suggestions are review-only.
+Bug & Resource analysis remains unavailable unless its service URL is
+configured. The sandbox is enabled in Compose and requires access to the Docker
+socket, so deploy it only with an appropriately isolated Docker host.
 
 ## Running it locally
 
@@ -48,14 +55,22 @@ docker compose up --build -d
 - Gateway: http://localhost:8000 (docs at /docs)
 - Orchestrator: http://localhost:8001 (internal gateway target)
 - Code quality service: http://localhost:8002 (docs at /docs)
-- Security, Validation, and Repair: internal Compose services; not published
-   to host ports
+- Security, Validation, Repair, and Report/Recommendation: internal Compose
+   services; not published to host ports
 - PostgreSQL: internal Compose service; data persists in `postgres-data`
 
 The Repair agent calls Ollama on the Docker host at port `11434` by default.
-Set `OLLAMA_HOST_PORT` in `.env` if your host Ollama uses another port. To avoid host-port
+Set `OLLAMA_HOST_PORT` in `.env` if your host Ollama uses another port, and
+`OLLAMA_MODEL` to select an installed model. The default `qwen2.5-coder:3b`
+may produce weaker repairs than a larger code-capable model. To avoid host-port
 collisions when another stack is running, override `GATEWAY_PORT`,
 `ORCHESTRATOR_PORT`, `QUALITY_PORT`, or `FRONTEND_PORT` in `.env`.
+
+Set `GEMINI_API_KEY` in the untracked `.env` to enable the Report/Recommendation
+service. The option is unchecked by default; source is sent to Gemini only when
+selected for an analysis. `GEMINI_MODEL` optionally overrides the default
+model. The existing HTML report can be printed or saved as PDF from the
+results page.
 
 The Gateway creates the initial SQLAlchemy schema at startup. Compose supplies
 `GATEWAY_DATABASE_URL` using `POSTGRES_DB`, `POSTGRES_USER`, and
@@ -77,20 +92,34 @@ cd services/code-quality-service
 pip install -r requirements.txt
 PYTHONPATH=../.. uvicorn app.main:app --reload --port 8002
 
-# Orchestrator (in a second terminal)
+# Fix & Regeneration service (in another terminal)
+cd services/repair-service
+pip install -r requirements.txt
+OLLAMA_BASE_URL=http://localhost:11434/api/generate OLLAMA_MODEL=qwen2.5-coder:3b \
+   uvicorn app.main:app --reload --port 8004
+
+# Report/recommendation service (in a second terminal)
+cd services/report-recommendation-service
+pip install -r requirements.txt
+# Set GEMINI_API_KEY in the shell before starting this service.
+GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.8-flash}" uvicorn app.main:app --reload --port 8003
+
+# Orchestrator (in a third terminal)
 cd services/orchestrator-service
 pip install -r requirements.txt
-ORCH_QUALITY_SERVICE_URL=http://localhost:8002 PYTHONPATH=../.. \
+ORCH_QUALITY_SERVICE_URL=http://localhost:8002 \
+ORCH_REPAIR_SERVICE_URL=http://localhost:8004 \
+ORCH_REPORT_RECOMMENDATION_SERVICE_URL=http://localhost:8003 PYTHONPATH=../.. \
   uvicorn app.main:app --reload --port 8001
 
-# Gateway (in a third terminal)
+# Gateway (in a fourth terminal)
 cd gateway
 pip install -r requirements.txt
 GATEWAY_ORCHESTRATOR_URL=http://localhost:8001 \
 GATEWAY_DATABASE_URL=sqlite+aiosqlite:///./gateway.db PYTHONPATH=.. \
    uvicorn app.main:app --reload --port 8000
 
-# Frontend (in a fourth terminal)
+# Frontend (in a fifth terminal)
 cd frontend
 npm install
 VITE_API_BASE_URL=http://localhost:8000 npm run dev

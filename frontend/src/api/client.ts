@@ -1,7 +1,7 @@
 import type { AuthSession } from "./types";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL ?? import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
-const TOKEN_KEY = "coding-validation-token";
+const USER_KEY = "coding-validation-user";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -19,19 +19,16 @@ export function mocksEnabled(): boolean {
   return import.meta.env.VITE_USE_MOCKS === "true";
 }
 
-export function saveSession(session: AuthSession, _remember: boolean): void {
+export function saveSession(session: AuthSession): void {
   clearSession();
-  const storage = window.sessionStorage;
-  storage.setItem(TOKEN_KEY, session.access_token);
-  storage.setItem(`${TOKEN_KEY}-user`, JSON.stringify(session.user));
+  window.sessionStorage.setItem(USER_KEY, JSON.stringify(session.user));
 }
 
 export function readSession(): AuthSession | null {
-  const serialized = window.sessionStorage.getItem(`${TOKEN_KEY}-user`);
-  const accessToken = window.sessionStorage.getItem(TOKEN_KEY);
-  if (!serialized || !accessToken) return null;
+  const serialized = window.sessionStorage.getItem(USER_KEY);
+  if (!serialized) return null;
   try {
-    return { access_token: accessToken, token_type: "Bearer", user: JSON.parse(serialized) as AuthSession["user"] };
+    return { user: JSON.parse(serialized) as AuthSession["user"] };
   } catch {
     clearSession();
     return null;
@@ -39,10 +36,8 @@ export function readSession(): AuthSession | null {
 }
 
 export function clearSession(): void {
-  window.localStorage.removeItem(TOKEN_KEY);
-  window.localStorage.removeItem(`${TOKEN_KEY}-user`);
-  window.sessionStorage.removeItem(TOKEN_KEY);
-  window.sessionStorage.removeItem(`${TOKEN_KEY}-user`);
+  window.localStorage.removeItem(USER_KEY);
+  window.sessionStorage.removeItem(USER_KEY);
 }
 
 function safeError(status: number): ApiError {
@@ -62,8 +57,6 @@ function buildHeaders(options: RequestInit, isForm: boolean): Headers {
   const headers = new Headers(options.headers);
   if (!isForm && options.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
-  const token = window.sessionStorage.getItem(TOKEN_KEY);
-  if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
   return headers;
 }
 
@@ -73,13 +66,14 @@ async function request<T>(path: string, options: RequestInit = {}, isForm = fals
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
       headers: buildHeaders(options, isForm),
+      credentials: "include",
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new ApiError("Unable to reach the service. Check your connection and try again.", 0);
   }
 
-  if (response.status === 401) {
+  if (response.status === 401 && !path.startsWith("/api/auth/")) {
     window.dispatchEvent(new CustomEvent("coding-validation:session-expired", { detail: { from: window.location.pathname } }));
   }
   if (!response.ok) throw safeError(response.status);
@@ -94,13 +88,14 @@ function postWithProgress<T>(path: string, body: unknown, onProgress: (percent: 
     const xhr = new XMLHttpRequest();
     const serialized = JSON.stringify(body);
     xhr.open("POST", `${API_BASE_URL}${path}`);
+    xhr.withCredentials = true;
     buildHeaders({ method: "POST", body: serialized }, false).forEach((value, key) => xhr.setRequestHeader(key, value));
     xhr.timeout = 120_000;
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
     };
     xhr.onload = () => {
-      if (xhr.status === 401) window.dispatchEvent(new CustomEvent("coding-validation:session-expired", { detail: { from: window.location.pathname } }));
+      if (xhr.status === 401 && !path.startsWith("/api/auth/")) window.dispatchEvent(new CustomEvent("coding-validation:session-expired", { detail: { from: window.location.pathname } }));
       if (xhr.status < 200 || xhr.status >= 300) { reject(safeError(xhr.status)); return; }
       if (xhr.status === 204) { resolve(undefined as T); return; }
       const contentType = xhr.getResponseHeader("content-type") ?? "";

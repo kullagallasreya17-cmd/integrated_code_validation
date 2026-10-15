@@ -2,36 +2,55 @@ from app.aggregation.finding_aggregator import summarize
 from app.config import settings
 
 
+CHECK_NAMES = ("code_quality", "security", "bug_resource", "complexity", "automated_repair", "final_validation")
+
+
+def _analysis_checks(state: dict) -> dict[str, bool]:
+    raw_checks = (state.get("project_context") or {}).get("analysis_checks")
+    if not isinstance(raw_checks, dict):
+        return dict.fromkeys(CHECK_NAMES, True)
+    return {name: bool(raw_checks.get(name, True)) for name in CHECK_NAMES}
+
+
+def _quality_evidence_failed(state: dict, checks: dict[str, bool]) -> bool:
+    if not (checks["code_quality"] or checks["complexity"]):
+        return False
+    quality_summary = state.get("quality_summary") or {}
+    quality_gate = quality_summary.get("quality_gate_status") or quality_summary.get("quality_gate", {}).get("status")
+    required_tools = state.get("tools") or quality_summary.get("selected_tools") or []
+    completed_tools = {
+        run.get("tool")
+        for run in quality_summary.get("tool_runs", [])
+        if isinstance(run, dict) and run.get("status") == "completed"
+    }
+    return quality_gate != "PASS" or not required_tools or not set(required_tools).issubset(completed_tools)
+
+
+def _agent_error_is_selected(error: dict, checks: dict[str, bool], quality_selected: bool) -> bool:
+    agent = error.get("agent")
+    selected_agents = {
+        "code_quality": quality_selected,
+        "security": checks["security"],
+        "bug_resource": checks["bug_resource"],
+        "repair": checks["automated_repair"],
+        "code_quality_reanalysis": checks["automated_repair"],
+        "sandbox": checks["final_validation"],
+        "validation": checks["final_validation"],
+    }
+    return selected_agents.get(agent, False)
+
+
 def _effective_validation_status(state: dict) -> str:
     status = state.get("validation_status", "unknown")
     if status != "passed":
         return status
 
-    raw_checks = (state.get("project_context") or {}).get("analysis_checks")
-    check_names = ("code_quality", "security", "bug_resource", "complexity", "automated_repair", "final_validation")
-    checks = {name: bool(raw_checks.get(name, True)) for name in check_names} if isinstance(raw_checks, dict) else dict.fromkeys(check_names, True)
+    checks = _analysis_checks(state)
     quality_selected = checks["code_quality"] or checks["complexity"]
-    quality_summary = state.get("quality_summary") or {}
-    quality_gate = quality_summary.get("quality_gate_status") or quality_summary.get("quality_gate", {}).get("status")
-    if quality_selected:
-        required_tools = state.get("tools") or quality_summary.get("selected_tools") or []
-        tool_runs = quality_summary.get("tool_runs") or []
-        tool_statuses = {
-            run.get("tool"): run.get("status")
-            for run in tool_runs
-            if isinstance(run, dict)
-        }
-        if quality_gate != "PASS" or not required_tools or any(tool_statuses.get(tool) != "completed" for tool in required_tools):
-            return "failed"
-
-    for error in state.get("agent_errors", []):
-        agent = error.get("agent")
-        if (agent == "code_quality" and quality_selected
-            or agent == "security" and checks["security"]
-            or agent == "bug_resource" and checks["bug_resource"]
-            or agent in {"repair", "code_quality_reanalysis"} and checks["automated_repair"]
-            or agent in {"sandbox", "validation"} and checks["final_validation"]):
-            return "failed"
+    if _quality_evidence_failed(state, checks):
+        return "failed"
+    if any(_agent_error_is_selected(error, checks, quality_selected) for error in state.get("agent_errors", [])):
+        return "failed"
     return status
 
 
@@ -83,6 +102,9 @@ def build_report(state: dict) -> dict:
         "workflow_summary": workflow_summary,
         "prioritized_findings": state.get("prioritized_findings", findings),
         "explanations": state.get("explanations", []),
+        "code_report": state.get("code_report", {}),
+        "recommendation_report": state.get("recommendation_report", {}),
+        "ai_recommendations_status": state.get("ai_recommendations_status", {"status": "disabled"}),
         "reanalysis_findings": state.get("reanalysis_findings", []),
         "reanalysis_summary": state.get("reanalysis_summary", {}),
         "comparison": state.get("comparison", {}),
