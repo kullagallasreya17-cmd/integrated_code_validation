@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { apiClient } from "../api/client";
 
 export type AuthMode = "signin" | "signup" | "forgot" | "reset";
 
@@ -10,6 +11,13 @@ export type AuthFormValues = {
   resetToken?: string;
   remember: boolean;
 };
+
+type AgentServiceStatuses = Record<string, boolean>;
+
+function serviceBadgeStatus(statuses: AgentServiceStatuses | null, service: string): string {
+  if (!statuses) return "...";
+  return statuses[service] ? "ON" : "OFF";
+}
 
 interface AuthPageProps {
   readonly mode: AuthMode;
@@ -52,6 +60,15 @@ export function AuthPage({ mode, localDemoEnabled, busy, message, error, onModeC
     remember: true,
   });
   const [formError, setFormError] = useState("");
+  const [agentServices, setAgentServices] = useState<AgentServiceStatuses | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void apiClient.get<{ services?: AgentServiceStatuses }>("/api/system/public-agents")
+      .then((payload) => { if (active) setAgentServices(payload.services ?? {}); })
+      .catch(() => { if (active) setAgentServices({}); });
+    return () => { active = false; };
+  }, []);
 
   function handleFieldChange(key: keyof AuthFormValues, value: string | boolean) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -148,13 +165,13 @@ export function AuthPage({ mode, localDemoEnabled, busy, message, error, onModeC
               </pre>
             </div>
             <div className="agent-badge agent-badge--orchestrator"><span className="agent-badge__index">ORCH</span><span>Workflow</span></div>
-            <div className="agent-badge agent-badge--code-analysis"><span className="agent-badge__index">ON</span><span>Code Analysis</span></div>
-            <div className="agent-badge agent-badge--security"><span className="agent-badge__index">OFF</span><span>Security</span></div>
-            <div className="agent-badge agent-badge--quality"><span className="agent-badge__index">ON</span><span>Code Quality</span></div>
-            <div className="agent-badge agent-badge--bug"><span className="agent-badge__index">OFF</span><span>Bug &amp; Resource</span></div>
-            <div className="agent-badge agent-badge--repair"><span className="agent-badge__index">OFF</span><span>Repair</span></div>
-            <div className="agent-badge agent-badge--validation"><span className="agent-badge__index">OFF</span><span>Validation</span></div>
-            <div className="agent-badge agent-badge--report"><span className="agent-badge__index">STAGE</span><span>Reporting</span></div>
+            <div className="agent-badge agent-badge--code-analysis"><span className="agent-badge__index" title="Code analysis runs inside the orchestrator">ORCH</span><span>Code Analysis</span></div>
+            <div className="agent-badge agent-badge--security"><span className="agent-badge__index" title="Security service status">{serviceBadgeStatus(agentServices, "security")}</span><span>Security</span></div>
+            <div className="agent-badge agent-badge--quality"><span className="agent-badge__index" title="Code Quality service status">{serviceBadgeStatus(agentServices, "code_quality")}</span><span>Code Quality</span></div>
+            <div className="agent-badge agent-badge--bug"><span className="agent-badge__index" title="Bug & Resource service status">{serviceBadgeStatus(agentServices, "bug_resource")}</span><span>Bug &amp; Resource</span></div>
+            <div className="agent-badge agent-badge--repair"><span className="agent-badge__index" title="Repair service status">{serviceBadgeStatus(agentServices, "repair")}</span><span>Repair</span></div>
+            <div className="agent-badge agent-badge--validation"><span className="agent-badge__index" title="Validation service status">{serviceBadgeStatus(agentServices, "validation")}</span><span>Validation</span></div>
+            <div className="agent-badge agent-badge--report"><span className="agent-badge__index" title="Report & Recommendation service status">{serviceBadgeStatus(agentServices, "report_recommendation")}</span><span>Reporting</span></div>
           </div>
 
         </section>

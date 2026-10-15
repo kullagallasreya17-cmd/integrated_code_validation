@@ -1,4 +1,3 @@
-import re
 from typing import Literal
 from uuid import uuid4
 
@@ -22,6 +21,14 @@ ROLES = ("Developer", "Reviewer", "Technical Lead", "Administrator")
 password_hasher = PasswordHasher()
 
 
+def _is_valid_email(value: str) -> bool:
+    if value.count("@") != 1 or any(character.isspace() for character in value):
+        return False
+    local, domain = value.split("@")
+    domain_name, separator, top_level_domain = domain.rpartition(".")
+    return bool(local and domain_name and separator and top_level_domain)
+
+
 class CreateUserRequest(BaseModel):
     full_name: str = Field(min_length=1, max_length=120)
     email: str = Field(min_length=3, max_length=320)
@@ -32,7 +39,7 @@ class CreateUserRequest(BaseModel):
     @classmethod
     def normalize_email(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        if not _is_valid_email(normalized):
             raise ValueError("Enter a valid email address")
         return normalized
 
@@ -57,7 +64,7 @@ class UpdateUserRequest(BaseModel):
         if value is None:
             return None
         normalized = value.strip().lower()
-        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        if not _is_valid_email(normalized):
             raise ValueError("Enter a valid email address")
         return normalized
 
@@ -88,7 +95,11 @@ async def list_users(session: AsyncSession = Depends(get_session)) -> dict:
     return {"items": [_user_payload(user) for user in users]}
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    responses={409: {"description": "An account with that email already exists"}},
+)
 async def create_user(request: CreateUserRequest, session: AsyncSession = Depends(get_session)) -> dict:
     user = UserRecord(
         user_id=str(uuid4()),
@@ -107,7 +118,14 @@ async def create_user(request: CreateUserRequest, session: AsyncSession = Depend
     return _user_payload(user)
 
 
-@router.patch("/{user_id}")
+@router.patch(
+    "/{user_id}",
+    responses={
+        404: {"description": "User not found"},
+        409: {"description": "The account update conflicts with an administration rule or email already exists"},
+        422: {"description": "At least one user field must be changed"},
+    },
+)
 async def update_user(
     user_id: str,
     changes: UpdateUserRequest,
