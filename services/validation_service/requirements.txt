@@ -1,5 +1,0 @@
-fastapi
-uvicorn[standard]
-pydantic
-flake8
-pyflakes
