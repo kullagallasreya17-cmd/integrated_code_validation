@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { applyRepairToProject } from "../api/repair";
 import { usePermission } from "../auth/permissions";
 import { CodeComparison } from "./CodeComparison";
+import { repairComparisonState } from "../analysis/codeComparison";
 import type { ProjectFile, WorkflowRunResponse } from "../types/finding";
 import { recordOf, repairAttempts, textOf } from "../analysis/model";
 
@@ -77,6 +78,6 @@ export function RepairActions({ originalFiles, repairedFiles, result }: Readonly
     </>}
     {message && <output aria-live="polite">{message}</output>}
     <p>Apply is enabled only when an accepted repair has PASS validation evidence.</p>
-    {previewOpen && <dialog ref={previewDialog} className="repair-preview" aria-labelledby="repair-preview-title" onCancel={(event) => { event.preventDefault(); setPreviewOpen(false); }}><h2 id="repair-preview-title">Review repair diff</h2><CodeComparison original={originalFiles} repaired={repairedFiles} /><div className="repair-actions__buttons"><button className="btn btn--primary" disabled={busy || !canApply || !acceptedAndValidated} onClick={() => void apply()}>{busy ? "Applying..." : "Confirm apply"}</button><button className="btn" onClick={() => setPreviewOpen(false)}>Cancel</button><Link className="btn btn--link" to={`/analysis/${encodeURIComponent(result.project_id)}/validation`}>Validation evidence</Link></div></dialog>}
+    {previewOpen && <dialog ref={previewDialog} className="repair-preview" aria-labelledby="repair-preview-title" onCancel={(event) => { event.preventDefault(); setPreviewOpen(false); }}><h2 id="repair-preview-title">Review repair diff</h2><CodeComparison original={originalFiles} repaired={repairedFiles} {...repairComparisonState(result)} /><div className="repair-actions__buttons"><button className="btn btn--primary" disabled={busy || !canApply || !acceptedAndValidated} onClick={() => void apply()}>{busy ? "Applying..." : "Confirm apply"}</button><button className="btn" onClick={() => setPreviewOpen(false)}>Cancel</button><Link className="btn btn--link" to={`/analysis/${encodeURIComponent(result.project_id)}/validation`}>Validation evidence</Link></div></dialog>}
   </section>;
 }

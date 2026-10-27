@@ -1,6 +1,6 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import type { ReactNode } from "react";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/AuthContextStore";
 import type { Role } from "../api/types";
 import { usePermission, type Capability } from "../auth/permissions";
 

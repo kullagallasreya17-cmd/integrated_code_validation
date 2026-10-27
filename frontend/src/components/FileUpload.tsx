@@ -1,7 +1,12 @@
 import { useRef, useState } from "react";
 import JSZip from "jszip";
 import type { ProjectFile } from "../types/finding";
-import { validatePythonPath } from "../api/files";
+import { detectProjectLanguage, projectLanguageForPath, validateProjectFilePath } from "../api/files";
+
+const MANIFEST_NAMES = new Set([
+  "requirements.txt", "pyproject.toml", "package.json", "package-lock.json",
+  "tsconfig.json", "pom.xml", "build.gradle", "build.gradle.kts", "go.mod", "go.sum",
+]);
 
 interface PreparedFile extends ProjectFile {
   readonly sizeBytes: number;
@@ -21,27 +26,21 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
   async function handleFiles(fileList: FileList) {
     setError(null);
     const selectedFiles = Array.from(fileList);
-    const pyFiles = selectedFiles.filter((file) => file.name.toLowerCase().endsWith(".py"));
+    const sourceFiles = selectedFiles.filter((file) => projectLanguageForPath(file.name) !== null);
+    const manifestFiles = selectedFiles.filter((file) => MANIFEST_NAMES.has(file.name.toLowerCase()));
     const zipFiles = selectedFiles.filter((file) => file.name.toLowerCase().endsWith(".zip"));
-    const totalInputs = pyFiles.length + zipFiles.length;
+    const totalInputs = sourceFiles.length + manifestFiles.length + zipFiles.length;
     let completedInputs = 0;
-    const otherCode = selectedFiles.filter((file) => /\.(js|jsx|ts|tsx|java|go|rs|c|h|cpp|rb|php|cs|swift|kt)$/i.test(file.name));
-
-    if (otherCode.length > 0) {
-      setError("This workspace accepts Python projects only. Remove non-Python source files and try again.");
-      return;
-    }
-
-    if (pyFiles.length === 0 && zipFiles.length === 0) {
-      setError("Select Python files, a project folder, or a ZIP archive.");
+    if (sourceFiles.length === 0 && manifestFiles.length === 0 && zipFiles.length === 0) {
+      setError("Select supported source files, project manifests, a folder, or a ZIP archive.");
       return;
     }
 
     try {
       setProgress({ completed: 0, total: totalInputs });
-      const readFiles: PreparedFile[] = await Promise.all(pyFiles.map(async (file) => {
+      const readFiles: PreparedFile[] = await Promise.all(sourceFiles.map(async (file) => {
         const prepared = {
-          path: validatePythonPath(file.webkitRelativePath || file.name),
+          path: validateProjectFilePath(file.webkitRelativePath || file.name),
           content: await file.text(),
           sizeBytes: file.size,
         };
@@ -50,30 +49,48 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
         return prepared;
       }));
 
-      for (const archive of zipFiles) {
-        const zip = await JSZip.loadAsync(archive);
-        const nonPythonCode = Object.values(zip.files).some((entry) => !entry.dir && /\.(js|jsx|ts|tsx|java|go|rs|c|h|cpp|rb|php|cs|swift|kt)$/i.test(entry.name));
-        if (nonPythonCode) throw new Error("The archive contains non-Python source files.");
-        const entries = Object.values(zip.files).filter((entry) => !entry.dir && entry.name.toLowerCase().endsWith(".py"));
-        const extracted = await Promise.all(entries.map(async (entry) => {
-          const content = await entry.async("string");
-          return { path: validatePythonPath(entry.name), content, sizeBytes: new Blob([content]).size };
-        }));
-        readFiles.push(...extracted);
+      const readManifests: PreparedFile[] = await Promise.all(manifestFiles.map(async (file) => {
+        const prepared = {
+          path: validateProjectFilePath(file.webkitRelativePath || file.name),
+          content: await file.text(),
+          sizeBytes: file.size,
+        };
         completedInputs += 1;
         setProgress({ completed: completedInputs, total: totalInputs });
-      }
+        return prepared;
+      }));
+      readFiles.push(...readManifests);
+
+      const archiveContents = await Promise.all(zipFiles.map(async (archive) => {
+        const zip = await JSZip.loadAsync(archive);
+        const entries = Object.values(zip.files).filter((entry) => !entry.dir && (
+          projectLanguageForPath(entry.name) !== null
+          || MANIFEST_NAMES.has(entry.name.split("/").pop()?.toLowerCase() ?? "")
+        ));
+        const extracted = await Promise.all(entries.map(async (entry) => {
+          const content = await entry.async("string");
+          return { path: validateProjectFilePath(entry.name), content, sizeBytes: new Blob([content]).size };
+        }));
+        return extracted;
+      }));
+      readFiles.push(...archiveContents.flat());
+      completedInputs += zipFiles.length;
+      setProgress({ completed: completedInputs, total: totalInputs });
 
       const uniqueFiles = Array.from(new Map(readFiles.map((file) => [file.path, file])).values());
-      if (uniqueFiles.length === 0) {
-        setError("No Python files were found in the selected input.");
+      const sourcePaths = uniqueFiles.filter((file) => projectLanguageForPath(file.path)).map((file) => file.path);
+      if (sourcePaths.length === 0) {
+        setError("No supported source files were found in the selected input.");
         return;
       }
+      detectProjectLanguage(sourcePaths);
 
       setFiles(uniqueFiles);
       onFilesReady(uniqueFiles.map(({ path, content }) => ({ path, content })));
-    } catch {
-      setError("Input could not be read. Use relative .py paths only; absolute paths and '..' segments are rejected.");
+    } catch (error) {
+      setError(error instanceof Error
+        ? error.message
+        : "Input could not be read. Use supported source files and relative paths without '..' segments.");
     } finally {
       setProgress(null);
       if (inputRef.current) inputRef.current.value = "";
@@ -102,7 +119,7 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
       >
         <label className="file-upload__prompt" htmlFor="project-files-input">
           <span className="upload-glyph">↑</span>
-          <span className="file-upload__prompt-copy"><strong>Drop Python files, a folder, or ZIP archive</strong><br /><span className="file-upload__hint">Only Python source files are sent for analysis</span></span>
+          <span className="file-upload__prompt-copy"><strong>Drop source files, a folder, or ZIP archive</strong><br /><span className="file-upload__hint">Python, JavaScript, TypeScript, Java, C/C++, Go, or C#</span></span>
         </label>
         <div className="upload-actions">
           <button type="button" className="btn btn--secondary upload-action" disabled={progress !== null} onClick={() => inputRef.current?.click()}>Choose files or ZIP</button>
@@ -113,7 +130,7 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
           id="project-files-input"
           type="file"
           multiple
-          accept=".py,.zip"
+          accept=".py,.js,.jsx,.mjs,.cjs,.ts,.tsx,.java,.c,.h,.cc,.cpp,.cxx,.hh,.hpp,.hxx,.go,.cs,.zip,requirements.txt,pyproject.toml,package.json,tsconfig.json,pom.xml,build.gradle,build.gradle.kts,go.mod,go.sum"
           hidden
           onChange={(e) => e.target.files && void handleFiles(e.target.files)}
         />
@@ -124,7 +141,7 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
           onChange={(e) => e.target.files && void handleFiles(e.target.files)}
           ref={(element) => {
             if (element) element.setAttribute("webkitdirectory", "");
-            if (element) element.setAttribute("accept", ".py,.zip");
+            if (element) element.setAttribute("accept", ".py,.js,.jsx,.mjs,.cjs,.ts,.tsx,.java,.c,.h,.cc,.cpp,.cxx,.hh,.hpp,.hxx,.go,.cs,.zip,requirements.txt,pyproject.toml,package.json,tsconfig.json,pom.xml,build.gradle,build.gradle.kts,go.mod,go.sum");
             directoryInputRef.current = element;
           }}
         />
@@ -135,10 +152,10 @@ export function FileUpload({ onFilesReady }: Readonly<FileUploadProps>) {
 
       {files.length > 0 && (
         <>
-        <p className="file-upload__summary">{files.length} Python files · {formatBytes(totalSize)}. Selecting another set replaces these files.</p>
+        <p className="file-upload__summary">{files.filter((file) => projectLanguageForPath(file.path)).length} source files · {files.filter((file) => MANIFEST_NAMES.has(file.path.split("/").pop()?.toLowerCase() ?? "")).length} manifests · {formatBytes(totalSize)}. Selecting another set replaces these files.</p>
         <ul className="file-upload__list">
           {files.map((file) => (
-            <li key={file.path}><span>PY</span><span>{file.path}<small>{formatBytes(file.sizeBytes)}</small></span><b>ready</b><button type="button" className="btn btn--ghost" aria-label={`Remove ${file.path}`} onClick={() => removeFile(file.path)}>Remove</button></li>
+            <li key={file.path}><span>{projectLanguageForPath(file.path)?.slice(0, 2).toUpperCase() ?? "CFG"}</span><span>{file.path}<small>{formatBytes(file.sizeBytes)}</small></span><b>ready</b><button type="button" className="btn btn--ghost" aria-label={`Remove ${file.path}`} onClick={() => removeFile(file.path)}>Remove</button></li>
           ))}
         </ul>
         </>

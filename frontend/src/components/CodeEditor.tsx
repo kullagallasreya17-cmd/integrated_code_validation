@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
+import { projectLanguageForPath } from "../api/files";
 
 interface CodeEditorProps {
   path: string;
@@ -13,6 +14,14 @@ interface CodeEditorProps {
 type MonacoEditor = Parameters<OnMount>[0];
 type MonacoApi = Parameters<OnMount>[1];
 type MonacoDecorationCollection = ReturnType<MonacoEditor["createDecorationsCollection"]>;
+
+function editorLanguageForPath(path: string): string {
+  const language = projectLanguageForPath(path);
+  if (language === "c") return "c";
+  if (language === "cpp") return "cpp";
+  if (language === "csharp") return "csharp";
+  return language ?? "plaintext";
+}
 
 function setLineHighlight(
   editor: MonacoEditor,
@@ -58,7 +67,7 @@ export function CodeEditor({ path, value, readOnly = false, onChange, height = "
       <div className="code-editor__filename">{path}</div>
       <Editor
         height={height}
-        defaultLanguage="python"
+        language={editorLanguageForPath(path)}
         path={path}
         value={value}
         theme="vs-dark"

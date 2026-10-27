@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/AuthContextStore";
 import { AuthPage, type AuthFormValues, type AuthMode } from "./AuthPage";
 
 export function LoginRoute() {
@@ -41,7 +41,7 @@ export function LoginRoute() {
       : login(values.email, values.password, values.remember);
     void request
       .then(() => {
-        navigate(destination, { replace: true });
+        void navigate(destination, { replace: true });
       })
       .catch((cause: unknown) => {
         setError(cause instanceof ApiError ? cause.message : "Sign in failed. Please check your credentials and try again.");

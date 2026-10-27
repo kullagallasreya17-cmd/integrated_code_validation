@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiClient } from "../api/client";
+import { SUPPORTED_LANGUAGE_OPTIONS } from "../api/files";
 
 export type AuthMode = "signin" | "signup" | "forgot" | "reset";
 
@@ -13,6 +14,17 @@ export type AuthFormValues = {
 };
 
 type AgentServiceStatuses = Record<string, boolean>;
+
+const LANDING_SNIPPETS: Record<string, string[]> = {
+  python: ["def validate(source):", "    issues = analyze(source)", "    return issues"],
+  java: ["class Validator {", "  List<Issue> analyze(String code) {", "    return checker.run(code);"],
+  c: ["int validate(const char *code) {", "  return analyze(code);", "}"],
+  cpp: ["class Validator {", "  auto analyze(std::string_view code) {", "    return checker.run(code);"],
+  csharp: ["class Validator {", "  IReadOnlyList<Issue> Analyze(string code) {", "    return checker.Run(code);"],
+  javascript: ["function validate(source) {", "  const issues = analyze(source);", "  return issues;"],
+  typescript: ["function validate(source: string) {", "  const issues = analyze(source);", "  return issues;"],
+  go: ["func validate(source string) []Issue {", "  issues := analyze(source)", "  return issues"],
+};
 
 function serviceBadgeStatus(statuses: AgentServiceStatuses | null, service: string): string {
   if (!statuses) return "...";
@@ -61,6 +73,7 @@ export function AuthPage({ mode, localDemoEnabled, busy, message, error, onModeC
   });
   const [formError, setFormError] = useState("");
   const [agentServices, setAgentServices] = useState<AgentServiceStatuses | null>(null);
+  const [illustrationLanguage, setIllustrationLanguage] = useState<string>("python");
 
   useEffect(() => {
     let active = true;
@@ -124,14 +137,14 @@ export function AuthPage({ mode, localDemoEnabled, busy, message, error, onModeC
       <div className="auth-reference-layout" id="home">
         <section className="auth-reference-hero">
           <p className="reference-eyebrow">AI-POWERED ENGINEERING WORKSPACE</p>
-          <h1>AI-Powered Code<br /><em>Validation &amp; Repair</em><br />for Safer, Cleaner Code</h1>
-          <p className="auth-intro">Analyze your Python code, detect issues, get intelligent fixes, and keep your projects secure, reliable, and maintainable, all in one place.</p>
+          <h1>AI-Powered Code<br /><em>Validation &amp; Repair</em><br />for Every Language</h1>
+          <p className="auth-intro">Analyze code across multiple programming languages, detect bugs and security vulnerabilities, generate intelligent fixes, and validate code for safer, cleaner, and more reliable software.</p>
 
           <ul className="feature-list">
-            <li><span className="feature-list__icon feature-list__icon--violet">✦</span><span><strong>Multi-Agent Validation</strong><small>Code quality, security, bugs, and more.</small></span></li>
-            <li><span className="feature-list__icon feature-list__icon--blue">ϟ</span><span><strong>AI-Powered Repair</strong><small>Get intelligent fixes and re-validate your code.</small></span></li>
-            <li><span className="feature-list__icon feature-list__icon--green">▥</span><span><strong>Clear Insights</strong><small>Detailed reports, history, and recommendations.</small></span></li>
-            <li><span className="feature-list__icon feature-list__icon--orange">▣</span><span><strong>Secure &amp; Reliable</strong><small>Sandboxed execution and safe analysis.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--violet">✦</span><span><strong>Multi-Language Analysis</strong><small>Analyze code across supported programming languages.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--blue">ϟ</span><span><strong>AI-Powered Repair</strong><small>Generate fixes and revalidate repaired code.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--green">▥</span><span><strong>Clear Insights</strong><small>Show issue severity, explanations, and suggested fixes.</small></span></li>
+            <li><span className="feature-list__icon feature-list__icon--orange">▣</span><span><strong>Secure Validation</strong><small>Provide static analysis, compilation, and sandboxed execution where supported.</small></span></li>
           </ul>
 
           <div className="auth-illustration" aria-label="Code analysis workflow illustration">
@@ -154,15 +167,15 @@ export function AuthPage({ mode, localDemoEnabled, busy, message, error, onModeC
               <circle className="connection-node" cx="280" cy="340" r="3" />
             </svg>
             <div className="code-window">
-              <div className="code-window__bar"><i /><i /><i /><b>Python</b></div>
-              <pre>
-                <span className="code-window__line"><span>1</span><em>def</em> calculate_total(items):</span>
-                <span className="code-window__line"><span>2</span>    total = <strong>0</strong></span>
-                <span className="code-window__line"><span>3</span>    <em>for</em> item <em>in</em> items:</span>
-                <span className="code-window__line"><span>4</span>        total += item.price</span>
-                <span className="code-window__line"><span>5</span></span>
-                <span className="code-window__line"><span>6</span>    <em>return</em> total</span>
-              </pre>
+              <div className="code-window__bar"><i /><i /><i /><b>Multi-Language Editor</b></div>
+              <label className="code-window__language">Language
+                <select value={illustrationLanguage} onChange={(event) => setIllustrationLanguage(event.target.value)} aria-label="Select illustration language">
+                  {SUPPORTED_LANGUAGE_OPTIONS.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}
+                </select>
+              </label>
+              <pre>{(LANDING_SNIPPETS[illustrationLanguage] ?? LANDING_SNIPPETS.python).map((line, index) => (
+                <span className="code-window__line" key={`${illustrationLanguage}-${index}`}><span>{index + 1}</span>{line}</span>
+              ))}</pre>
             </div>
             <div className="agent-badge agent-badge--orchestrator"><span className="agent-badge__index">ORCH</span><span>Workflow</span></div>
             <div className="agent-badge agent-badge--code-analysis"><span className="agent-badge__index" title="Code analysis runs inside the orchestrator">ORCH</span><span>Code Analysis</span></div>

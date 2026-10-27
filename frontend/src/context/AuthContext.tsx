@@ -1,24 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getCurrentUser, login as loginRequest, loginLocalDemo as loginLocalDemoRequest, logout as logoutRequest, register as registerRequest } from "../api/auth";
 import { clearSession, dispatchWorkspaceClear, saveSession } from "../api/client";
 import type { AuthSession, Role } from "../api/types";
-
-interface AuthContextValue {
-  readonly session: AuthSession | null;
-  readonly user: AuthSession["user"] | null;
-  readonly isAuthenticated: boolean;
-  readonly isLoading: boolean;
-  readonly login: (email: string, password: string, remember: boolean) => Promise<void>;
-  readonly register: (fullName: string, email: string, password: string) => Promise<void>;
-  readonly loginAsLocalDemo: () => Promise<void>;
-  readonly logout: () => void;
-}
+import { AuthContext, type AuthContextValue } from "./AuthContextStore";
 
 interface AuthProviderProps {
   readonly children: ReactNode;
 }
-
-const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: Readonly<AuthProviderProps>) {
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -99,10 +87,4 @@ export function AuthProvider({ children }: Readonly<AuthProviderProps>) {
 
   const value = useMemo<AuthContextValue>(() => ({ session, user: session?.user ?? null, isAuthenticated: Boolean(session), isLoading, login, register, loginAsLocalDemo, logout }), [session, isLoading, login, register, loginAsLocalDemo, logout]);
   return <AuthContext.Provider value={value}>{children}{idleWarning && <dialog open className="idle-warning" aria-labelledby="idle-warning-title"><h2 id="idle-warning-title">Session ending soon</h2><p>You will be signed out in one minute because of inactivity.</p><button className="btn btn--primary" onClick={() => setIdleWarning(false)}>Stay signed in</button><button className="btn" onClick={logout}>Log out</button></dialog>}</AuthContext.Provider>;
-}
-
-export function useAuth(): AuthContextValue {
-  const context = useContext(AuthContext);
-  if (!context) throw new Error("useAuth must be used within AuthProvider.");
-  return context;
 }

@@ -1,0 +1,260 @@
+from app.reporting.report_builder import build_report
+from app.graph.nodes import finalize
+
+
+def test_selected_quality_gate_failure_cannot_report_validation_pass():
+	report = build_report({
+		"project_id": "quality-failure",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": True,
+			"security": False,
+			"bug_resource": False,
+			"complexity": True,
+			"automated_repair": False,
+			"final_validation": True,
+		}},
+		"quality_summary": {"quality_gate_status": "FAIL"},
+		"agent_errors": [{"agent": "code_quality", "error": "pylint: failed"}],
+	})
+
+	assert report["validation_status"] == "failed"
+	assert report["workflow_status"] != "SUCCESS"
+
+
+def test_finalizer_persists_effective_validation_status():
+	result = finalize({
+		"project_id": "quality-failure",
+		"validation_status": "passed",
+		"project_files": {"main.py": "print(1)\n"},
+		"project_context": {"analysis_checks": {
+			"code_quality": True,
+			"security": False,
+			"bug_resource": False,
+			"complexity": True,
+			"automated_repair": False,
+			"final_validation": True,
+		}},
+		"quality_summary": {"quality_gate_status": "FAIL"},
+		"agent_errors": [{"agent": "code_quality", "error": "ruff unavailable"}],
+	})
+
+	assert result["validation_status"] == "failed"
+	assert result["final_report"]["validation_status"] == "failed"
+
+
+def test_unselected_quality_failure_does_not_override_selected_validation():
+	report = build_report({
+		"project_id": "quality-disabled",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": False,
+			"security": False,
+			"bug_resource": False,
+			"complexity": False,
+			"automated_repair": False,
+			"final_validation": True,
+		}},
+		"quality_summary": {"quality_gate_status": "FAIL"},
+		"agent_errors": [{"agent": "code_quality", "error": "ruff: unavailable"}],
+	})
+
+	assert report["validation_status"] == "passed"
+
+
+def test_selected_quality_without_complete_tool_evidence_cannot_report_pass():
+	report = build_report({
+		"project_id": "missing-quality-evidence",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": True,
+			"security": False,
+			"bug_resource": False,
+			"complexity": False,
+			"automated_repair": False,
+			"final_validation": True,
+		}},
+		"tools": ["ruff"],
+		"quality_summary": {
+			"quality_gate_status": "PASS",
+			"tool_runs": [{"tool": "ruff", "status": "unavailable"}],
+		},
+	})
+
+	assert report["validation_status"] == "failed"
+
+
+def test_report_uses_completed_reanalysis_score_as_final_without_fabricating_missing_scores():
+	report = build_report({
+	    "project_id": "final-score",
+	    "validation_status": "needs_review",
+	    "quality_summary": {"quality_score": 78},
+	    "reanalysis_summary": {"quality_score": 98},
+	    "comparison": {"status": "complete"},
+	})
+
+	assert report["workflow_summary"]["quality_score"] == 98
+	assert report["workflow_summary"]["quality_gate"] is None
+
+	no_scores = build_report({
+	    "project_id": "missing-score",
+	    "validation_status": "error",
+	})
+	assert no_scores["workflow_summary"]["quality_score"] is None
+	assert no_scores["workflow_status"] == "ERROR"
+	assert report["workflow_status"] != "SUCCESS"
+
+
+def test_report_keeps_rejected_repair_and_validation_reason_visible():
+	report = build_report({
+		"project_id": "rejected-repair",
+		"validation_status": "needs_review",
+		"project_context": {"analysis_checks": {
+			"code_quality": True,
+			"security": False,
+			"bug_resource": False,
+			"complexity": True,
+			"automated_repair": True,
+			"final_validation": True,
+		}},
+		"repair_attempts": [{
+			"outcome": "failed",
+			"error": "Repair rejected: Repair introduced Ruff findings: W292 at line 2, column 1",
+			"rejected_candidates": [{"path": "main.py", "code": "print('candidate')"}],
+		}],
+		"validation_results": {
+			"status": "needs_review",
+			"findings": [{"code": "E305", "file": "main.py", "line": 4}],
+		},
+	})
+
+	assert report["workflow_status"] == "REVIEW_REQUIRED"
+	assert "Repair needs another attempt" in report["workflow_status_reason"]
+	assert report["repair_attempts"][0]["rejected_candidates"][0]["code"] == "print('candidate')"
+
+
+def test_successful_retry_can_clear_prior_repair_attempt_error():
+	report = build_report({
+		"project_id": "repair-retry-succeeded",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": False,
+			"security": False,
+			"bug_resource": False,
+			"complexity": False,
+			"automated_repair": True,
+			"final_validation": True,
+		}},
+		"repair_attempts": [
+			{"iteration": 1, "outcome": "failed", "error": "Repair rejected: W292"},
+			{"iteration": 2, "outcome": "validated", "validation_status": "passed"},
+		],
+		"agent_errors": [{"agent": "repair", "error": "Repair rejected: W292"}],
+	})
+
+	assert report["validation_status"] == "passed"
+	assert report["workflow_status"] == "SUCCESS"
+
+
+def test_repair_failure_does_not_rewrite_successful_validation_status():
+	report = build_report({
+		"project_id": "repair-failure-validation-passed",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": False,
+			"security": False,
+			"bug_resource": False,
+			"complexity": False,
+			"automated_repair": True,
+			"final_validation": True,
+		}},
+		"repair_attempts": [{
+			"outcome": "failed",
+			"changed_files": [],
+			"error": "Repair made no source changes; findings remain unresolved.",
+		}],
+		"agent_errors": [{
+			"agent": "repair",
+			"error": "Repair made no source changes; findings remain unresolved.",
+		}],
+		"comparison": {
+			"status": "complete",
+			"remaining_original_count": 1,
+			"new_count": 0,
+		},
+		"validation_results": {"status": "passed", "passed": True, "findings": []},
+	})
+
+	assert report["validation_status"] == "passed"
+	assert report["repair_status"] == "failed"
+	assert report["workflow_status"] == "AGENT_FAILURE"
+	assert "Validation itself passed" in report["workflow_status_reason"]
+
+
+def test_unchanged_failed_retry_does_not_override_validation_of_last_candidate():
+	report = build_report({
+		"project_id": "validated-candidate-after-no-progress",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": True,
+			"security": False,
+			"bug_resource": False,
+			"complexity": False,
+			"automated_repair": True,
+			"final_validation": True,
+		}},
+		"quality_summary": {
+			"quality_gate_status": "PASS",
+			"selected_tools": ["ruff"],
+			"tool_runs": [{"tool": "ruff", "status": "completed"}],
+		},
+		"reanalysis_summary": {
+			"quality_gate_status": "PASS",
+			"selected_tools": ["ruff"],
+			"tool_runs": [{"tool": "ruff", "status": "completed"}],
+		},
+		"repair_attempts": [
+			{"outcome": "validated", "changed_files": ["main.py"]},
+			{"outcome": "failed", "changed_files": [], "error": "Repair made no source changes."},
+		],
+		"agent_errors": [{
+			"agent": "repair",
+			"error": "Repair rejected: main.py: Ruff reported an undefined name.",
+		}],
+		"comparison": {
+			"status": "complete",
+			"remaining_original_count": 1,
+			"new_count": 0,
+			"remaining_findings": [{"issue": "C0114", "severity": "low"}],
+		},
+		"validation_results": {"status": "passed", "passed": True, "findings": []},
+	})
+
+	assert report["validation_status"] == "passed"
+	assert report["workflow_status"] == "REVIEW_REQUIRED"
+	assert report["repair_status"] == "partial"
+	assert report["workflow_summary"]["repair_status"] == "partial"
+	assert "Sandbox and validation passed" in report["workflow_status_reason"]
+
+
+def test_passed_validation_with_remaining_reanalyzed_findings_requires_review():
+	report = build_report({
+		"project_id": "remaining-finding-after-validation",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": False,
+			"security": False,
+			"bug_resource": False,
+			"complexity": False,
+			"automated_repair": True,
+			"final_validation": True,
+		}},
+		"comparison": {
+			"status": "complete",
+			"remaining_original_count": 1,
+			"new_count": 0,
+		},
+	})
+
+	assert report["validation_status"] == "passed"
+	assert report["workflow_status"] == "REVIEW_REQUIRED"

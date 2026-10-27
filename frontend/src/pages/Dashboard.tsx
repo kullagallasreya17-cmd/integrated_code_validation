@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { apiClient } from "../api/client";
 import type { RunHistoryEntry, WorkflowRunResponse } from "../types/finding";
 
 interface DashboardPageProps {
@@ -9,24 +11,64 @@ interface DashboardPageProps {
   canStartAnalysis: boolean;
 }
 
+interface ServiceHealth {
+  status: string;
+  healthy: boolean;
+  details?: Record<string, unknown>;
+}
+
 const AGENT_SUMMARY = [
-  ["01", "Code analysis", "AST structure and dependencies", "Connected"],
-  ["02", "Security", "SAST, secrets and CWE evidence", "Not connected"],
-  ["03", "Code quality", "Ruff, Pylint and Radon", "Connected"],
-  ["04", "Bug & resource", "Runtime and resource risks", "Not connected"],
-  ["05", "Fix & regenerate", "Targeted patches or full code", "Not connected"],
-  ["06", "Validation", "Tests and acceptance checks", "Not connected"],
-  ["07", "Report", "Recommendations and traceability", "Orchestrator stage"],
-];
+  ["01", "Code analysis", "AST structure and dependencies", "orchestrator"],
+  ["02", "Security", "SAST, secrets and CWE evidence", "security"],
+  ["03", "Code quality", "Ruff, Pylint and Radon", "code_quality"],
+  ["04", "Bug & resource", "Runtime and resource risks", "bug_resource"],
+  ["05", "Fix & regenerate", "Targeted patches or full code", "repair"],
+  ["06", "Validation", "Tests and acceptance checks", "validation"],
+  ["07", "Report", "Recommendations and traceability", "report"],
+] as const;
+
 const AGENT_STATUS_CLASS: Record<string, string> = {
   Connected: "connected",
   "Orchestrator stage": "stage",
   "Not connected": "planned",
+  "Not configured": "planned",
+  "Unavailable": "planned",
 };
 
+function normalizeAgentStatus(key: string, serviceState?: ServiceHealth): string {
+  if (key === "report") return "Orchestrator stage";
+  if (!serviceState) return "Not connected";
+  if (serviceState.healthy) return "Connected";
+  if (serviceState.status === "not_configured") return "Not configured";
+  if (serviceState.status === "unavailable") return "Unavailable";
+  return "Not connected";
+}
+
 export function DashboardPage({ history, latestResult, onStart, onOpenResults, onOpenHistory, canStartAnalysis }: Readonly<DashboardPageProps>) {
+  const [agentServices, setAgentServices] = useState<Record<string, ServiceHealth>>({});
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadAgentHealth() {
+      try {
+        const payload = await apiClient.get<{ services?: Record<string, ServiceHealth>; ready?: number; configured?: number }>('/api/system/agents');
+        if (!active) return;
+        setAgentServices(payload.services ?? {});
+      } catch {
+        if (!active) return;
+        setAgentServices({});
+      }
+    }
+
+    void loadAgentHealth();
+    return () => { active = false; };
+  }, []);
+
   const findings = latestResult?.findings ?? [];
   const highRisk = findings.filter((finding) => finding.severity === "high" || finding.severity === "critical").length;
+  const connectedCount = AGENT_SUMMARY.filter(([ , , , key]) => key !== "report" && agentServices[key]?.healthy).length;
+  const totalTrackedAgents = AGENT_SUMMARY.filter(([ , , , key]) => key !== "report").length;
 
   return (
     <section className="page dashboard-page">
@@ -34,7 +76,7 @@ export function DashboardPage({ history, latestResult, onStart, onOpenResults, o
         <div>
           <div className="kicker">Workspace overview <span>00 / 04</span></div>
           <h1>Ship code<br /><em>with evidence.</em></h1>
-          <p>One controlled workflow for understanding Python projects, reviewing risk, and validating every repair candidate.</p>
+          <p>One controlled workflow for understanding projects, reviewing risk, and validating every repair candidate.</p>
         </div>
         {canStartAnalysis && <button className="btn btn--primary dashboard-hero__cta" onClick={onStart}>Start an analysis <span>↗</span></button>}
       </div>
@@ -43,14 +85,15 @@ export function DashboardPage({ history, latestResult, onStart, onOpenResults, o
         <div className="metric-card metric-card--accent"><span>Latest decision</span><strong>{latestResult ? latestResult.validation_status : "Not run"}</strong><small>{latestResult ? latestResult.project_id : "Submit a project to begin"}</small></div>
         <div className="metric-card"><span>Findings to review</span><strong>{findings.length}</strong><small>{highRisk} high or critical</small></div>
         <div className="metric-card"><span>Runs in workspace</span><strong>{history.length}</strong><small>Stored locally for this session</small></div>
-        <div className="metric-card"><span>Pipeline readiness</span><strong>3 / 7</strong><small>Core agents connected</small></div>
+        <div className="metric-card"><span>Pipeline readiness</span><strong>{connectedCount} / {totalTrackedAgents}</strong><small>Live agents connected</small></div>
       </div>
 
       <div className="dashboard-grid">
         <section className="dashboard-panel dashboard-panel--wide">
           <div className="section-label"><h2>Agent operating system</h2><span>7 agents · 1 orchestrator · 1 sandbox</span></div>
           <div className="agent-summary-grid">
-            {AGENT_SUMMARY.map(([number, name, detail, status]) => {
+            {AGENT_SUMMARY.map(([number, name, detail, key]) => {
+              const status = normalizeAgentStatus(key, agentServices[key]);
               const statusClass = AGENT_STATUS_CLASS[status];
               return (
               <div className="agent-summary-card" key={number}>

@@ -1,5 +1,5 @@
 services:
-  # ---- Sreya's services (active) ----
+  # ---- Active application services ----
 
   postgres:
     image: postgres:16-alpine
@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-coding_validation}
       POSTGRES_USER: ${POSTGRES_USER:-coding_validation}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or the environment}
+    ports:
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -18,12 +20,23 @@ services:
   gateway:
     build:
       context: .
-      dockerfile: gateway/Dockerfile
+      dockerfile: backend/gateway/Dockerfile
     ports:
       - "${GATEWAY_PORT:-8000}:8000"
     environment:
       - GATEWAY_ORCHESTRATOR_URL=http://orchestrator:8000
-      - GATEWAY_DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-coding_validation}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or the environment}@postgres:5432/${POSTGRES_DB:-coding_validation}
+      - GATEWAY_QUALITY_SERVICE_URL=http://code-quality:8000
+      - GATEWAY_SECURITY_SERVICE_URL=http://security:8000
+      - GATEWAY_REPAIR_SERVICE_URL=http://repair:8000
+      - GATEWAY_SANDBOX_SERVICE_URL=http://sandbox:8004
+      - GATEWAY_VALIDATION_SERVICE_URL=http://validation:8000
+      - GATEWAY_BUG_RESOURCE_SERVICE_URL=${ORCH_BUG_RESOURCE_SERVICE_URL:-http://bug-resource:8000}
+      - GATEWAY_REPORT_RECOMMENDATION_SERVICE_URL=http://report-recommendation:8000
+      - GATEWAY_DATABASE_HOST=postgres
+      - GATEWAY_DATABASE_PORT=5432
+      - GATEWAY_DATABASE_NAME=${POSTGRES_DB:-coding_validation}
+      - GATEWAY_DATABASE_USER=${POSTGRES_USER:-coding_validation}
+      - GATEWAY_DATABASE_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or the environment}
       - GATEWAY_CORS_ORIGINS=${GATEWAY_CORS_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174,http://localhost:5173,http://127.0.0.1:5173}
       - GATEWAY_AUTH_COOKIE_SECURE=${AUTH_COOKIE_SECURE:-false}
       - GATEWAY_LOCAL_DEMO_AUTH_ENABLED=${LOCAL_DEMO_AUTH_ENABLED:-false}
@@ -35,6 +48,24 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      bug-resource:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  report-recommendation:
+    build:
+      context: .
+      dockerfile: backend/services/report-recommendation-service/Dockerfile
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:${OLLAMA_HOST_PORT:-11434}/api/generate
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:3b}
+      - OLLAMA_REQUEST_TIMEOUT_SECONDS=${OLLAMA_REQUEST_TIMEOUT_SECONDS:-600}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -44,19 +75,35 @@ services:
   orchestrator:
     build:
       context: .
-      dockerfile: services/orchestrator-service/Dockerfile
+      dockerfile: backend/services/orchestrator-service/Dockerfile
     ports:
       - "${ORCHESTRATOR_PORT:-8001}:8000"
     environment:
       - ORCH_QUALITY_SERVICE_URL=http://code-quality:8000
       - ORCH_SECURITY_SERVICE_URL=http://security:8000
-      - ORCH_BUG_RESOURCE_SERVICE_URL=http://bug-resource:8000
+      - ORCH_BUG_RESOURCE_SERVICE_URL=${ORCH_BUG_RESOURCE_SERVICE_URL:-http://bug-resource:8000}
       - ORCH_REPAIR_SERVICE_URL=http://repair:8000
-      - ORCH_SANDBOX_SERVICE_URL=http://sandbox:8000
+      - ORCH_SANDBOX_SERVICE_URL=http://sandbox:8004
       - ORCH_VALIDATION_SERVICE_URL=http://validation:8000
+      - ORCH_REPORT_RECOMMENDATION_SERVICE_URL=http://report-recommendation:8000
+      - ORCH_REPAIR_CALL_TIMEOUT_SECONDS=${ORCH_REPAIR_CALL_TIMEOUT_SECONDS:-660}
+      - ORCH_AI_REPORT_TIMEOUT_SECONDS=${ORCH_AI_REPORT_TIMEOUT_SECONDS:-1250}
       - ORCH_RUN_STORE_PATH=/service/data/workflow-runs.json
     depends_on:
-      - code-quality
+      code-quality:
+        condition: service_started
+      security:
+        condition: service_started
+      bug-resource:
+        condition: service_healthy
+      repair:
+        condition: service_started
+      sandbox:
+        condition: service_started
+      validation:
+        condition: service_started
+      report-recommendation:
+        condition: service_healthy
     volumes:
       - orchestrator-data:/service/data
     healthcheck:
@@ -68,9 +115,82 @@ services:
   code-quality:
     build:
       context: .
-      dockerfile: services/code-quality-service/Dockerfile
+      dockerfile: backend/services/code-quality-service/Dockerfile
     ports:
       - "${QUALITY_PORT:-8002}:8000"
+    environment:
+      - QUALITY_SANDBOX_SERVICE_URL=http://sandbox:8004
+    depends_on:
+      sandbox:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  security:
+    build:
+      context: .
+      dockerfile: backend/services/security_service/Dockerfile
+    ports:
+      - "127.0.0.1:${SECURITY_PORT:-8009}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bug-resource:
+    build:
+      context: .
+      dockerfile: backend/services/bug-resource-service/Dockerfile
+    ports:
+      - "${BUG_RESOURCE_PORT:-8005}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  repair:
+    build:
+      context: .
+      dockerfile: backend/services/repair-service/Dockerfile
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:${OLLAMA_HOST_PORT:-11434}/api/generate
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:3b}
+      - OLLAMA_REQUEST_TIMEOUT_SECONDS=${OLLAMA_REQUEST_TIMEOUT_SECONDS:-600}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; data=json.load(urllib.request.urlopen('http://localhost:8000/health')); exit(0 if data.get('provider_ready') else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sandbox:
+    image: ${SANDBOX_RUNTIME_IMAGE:-coding-validation-agent-frontend-sandbox:latest}
+    build:
+      context: .
+      dockerfile: backend/services/sandbox_service/Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandbox-workspaces:/sandbox-workspaces
+    environment:
+      - SANDBOX_WORKSPACE_ROOT=/sandbox-workspaces
+      - SANDBOX_WORKSPACE_VOLUME=${COMPOSE_PROJECT_NAME:-coding-validation-agent-frontend}_sandbox-workspaces
+      - SANDBOX_DJANGO_RUNTIME_IMAGE=${SANDBOX_RUNTIME_IMAGE:-coding-validation-agent-frontend-sandbox:latest}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import docker; docker.from_env().ping()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  validation:
+    build:
+      context: .
+      dockerfile: backend/services/validation_service/Dockerfile
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -82,64 +202,47 @@ services:
       context: ./frontend
       args:
         VITE_API_BASE_URL: "${FRONTEND_API_BASE_URL:-http://localhost:8000}"
-        VITE_LOCAL_DEMO_AUTH: "${FRONTEND_LOCAL_DEMO_AUTH:-false}"
+        VITE_LOCAL_DEMO_AUTH: "${LOCAL_DEMO_AUTH_ENABLED:-false}"
     ports:
       - "${FRONTEND_PORT:-5174}:8080"
     environment:
-      - VITE_API_BASE_URL=${FRONTEND_API_BASE_URL:-http://localhost:8000}
+      VITE_API_BASE_URL: "${FRONTEND_API_BASE_URL:-http://localhost:8000}"
     depends_on:
       - gateway
+
+  evaluation:
+    profiles: ["evaluation"]
+    build:
+      context: .
+      dockerfile: backend/evaluation/Dockerfile
+    environment:
+      - EVAL_VALIDATION_URL=http://validation:8000
+      - EVAL_QUALITY_URL=http://code-quality:8000
+      - EVAL_SECURITY_URL=http://security:8000
+      - EVAL_BUG_RESOURCE_URL=http://bug-resource:8000
+      - EVAL_REPAIR_URL=http://repair:8000
+      - EVAL_ORCHESTRATOR_URL=http://orchestrator:8000
+      - EVAL_SANDBOX_URL=http://sandbox:8004
+    volumes:
+      - ./backend/evaluation/reports:/workspace/backend/evaluation/reports
+    depends_on:
+      validation:
+        condition: service_healthy
+      code-quality:
+        condition: service_healthy
+      security:
+        condition: service_healthy
+      bug-resource:
+        condition: service_healthy
+      repair:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
+      sandbox:
+        condition: service_healthy
 
 volumes:
   orchestrator-data:
   postgres-data:
-
-  # ---- Rakshitha's services (Fix & Regeneration, Security, DB & Reports) ----
-  # Uncomment once services/security-service, services/repair-service, and
-  # services/database-report-service exist.
-  #
-  # security:
-  #   build:
-  #     context: .
-  #     dockerfile: services/security-service/Dockerfile
-  #   ports:
-  #     - "8003:8000"
-  #
-  # repair:
-  #   build:
-  #     context: .
-  #     dockerfile: services/repair-service/Dockerfile
-  #   ports:
-  #     - "8004:8000"
-  #
-  # database-report:
-  #   build:
-  #     context: .
-  #     dockerfile: services/database-report-service/Dockerfile
-  #   ports:
-  #     - "8008:8000"
-
-  # ---- Shifa's services (Validation, Bug & Resource, Docker Sandbox) ----
-  # Uncomment once services/bug-resource-service, services/sandbox-service,
-  # and services/validation-service exist.
-  #
-  # bug-resource:
-  #   build:
-  #     context: .
-  #     dockerfile: services/bug-resource-service/Dockerfile
-  #   ports:
-  #     - "8005:8000"
-  #
-  # sandbox:
-  #   build:
-  #     context: .
-  #     dockerfile: services/sandbox-service/Dockerfile
-  #   ports:
-  #     - "8006:8000"
-  #
-  # validation:
-  #   build:
-  #     context: .
-  #     dockerfile: services/validation-service/Dockerfile
-  #   ports:
-  #     - "8007:8000"
+  sandbox-workspaces:
+    name: ${COMPOSE_PROJECT_NAME:-coding-validation-agent-frontend}_sandbox-workspaces

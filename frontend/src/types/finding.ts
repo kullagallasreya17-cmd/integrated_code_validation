@@ -23,12 +23,14 @@ export interface ProjectFile {
   content: string;
 }
 
-export type ValidationStatus = "pending" | "passed" | "failed" | "unknown";
+export type ValidationStatus = "pending" | "not_run" | "passed" | "failed" | "blocked" | "inconclusive" | "needs_review" | "error" | "unknown";
 
 export interface FinalReport {
   project_id: string;
   analysis_id?: string;
   workflow_status?: string;
+  workflow_status_reason?: string;
+  repair_status?: "not_attempted" | "completed" | "partial" | "failed";
   analysis_checks?: {
     readonly code_quality?: boolean;
     readonly security?: boolean;
@@ -36,7 +38,9 @@ export interface FinalReport {
     readonly complexity?: boolean;
     readonly automated_repair?: boolean;
     readonly final_validation?: boolean;
+    readonly ai_report_recommendations?: boolean;
   };
+  sandbox_stdin?: string;
   validation_status: ValidationStatus;
   retry_count: number;
   max_retries: number;
@@ -51,6 +55,34 @@ export interface FinalReport {
   security_findings?: Finding[];
   resource_findings?: Finding[];
   recommendations?: string[];
+  code_report?: {
+    scanned_files: number;
+    issues: Array<{
+      file_path: string;
+      line_number: number;
+      issue_type: string;
+      description: string;
+    }>;
+  };
+  recommendation_report?: {
+    fixes: Array<{
+      file_path: string;
+      line_number: number;
+      original_code: string;
+      suggested_code: string;
+      explanation: string;
+    }>;
+    suggestions: Array<{
+      category: string;
+      suggestion: string;
+      benefit: string;
+    }>;
+  };
+  ai_recommendations_status?: {
+    status: "disabled" | "skipped" | "completed" | "failed";
+    message?: string;
+    provider?: "ollama";
+  };
   explanations?: Array<Record<string, unknown>>;
   repair_attempts?: Array<Record<string, unknown>>;
   stage_history?: Array<Record<string, unknown>>;
@@ -58,11 +90,25 @@ export interface FinalReport {
   final_code?: Record<string, string>;
   quality_summary?: QualitySummary;
   reanalysis_summary?: QualitySummary;
+  reanalysis_findings?: Finding[];
   workflow_summary?: WorkflowSummary;
   workflow_trace?: string[];
   comparison?: {
+    status?: "complete" | "partial" | "not_run";
     findings_before?: number;
-    findings_after?: number;
+    findings_after?: number | null;
+    resolved_count?: number;
+    unchanged_count?: number;
+    new_count?: number;
+    unverified_count?: number;
+    remaining_original_count?: number;
+    unverified_before_count?: number;
+    unverified_after_count?: number;
+    resolved_findings?: Finding[];
+    unchanged_findings?: Finding[];
+    new_findings?: Finding[];
+    unverified_findings?: Finding[];
+    remaining_findings?: Finding[];
     resolved_issues?: string[];
     remaining_issues?: string[];
     changed_files?: string[];
@@ -99,10 +145,11 @@ export interface QualitySummary {
 
 export interface WorkflowSummary {
   workflow_status: string;
+  workflow_status_reason?: string;
   total_findings: number;
   findings_by_severity: Record<string, number>;
-  quality_score: number;
-  quality_gate: string;
+  quality_score?: number;
+  quality_gate?: string;
   repair_attempts: Array<Record<string, unknown>>;
   validation_result: Record<string, unknown>;
   agent_failures: Array<{ agent: string; error: string }>;
@@ -128,7 +175,7 @@ export interface WorkflowRunResponse {
   sandbox_result?: Record<string, unknown>;
   reanalysis_findings?: Finding[];
   reanalysis_summary?: QualitySummary;
-  comparison?: FinalReport["comparison"];
+  comparison?: NonNullable<FinalReport["comparison"]>;
   analysis_configuration?: {
     readonly sandbox_timeout_seconds: number;
     readonly memory_limit_mb: number;

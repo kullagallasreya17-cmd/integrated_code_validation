@@ -7,14 +7,17 @@ from app.config import settings
 from app.security import get_current_user
 
 router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(get_current_user)])
+public_router = APIRouter(prefix="/api/system", tags=["public system status"])
 
 SERVICES = {
     "orchestrator": settings.orchestrator_url,
     "code_quality": settings.quality_service_url,
     "security": settings.security_service_url,
+    "bug_resource": settings.bug_resource_service_url,
     "repair": settings.repair_service_url,
     "sandbox": settings.sandbox_service_url,
     "validation": settings.validation_service_url,
+    "report_recommendation": settings.report_recommendation_service_url,
 }
 
 
@@ -30,17 +33,31 @@ async def _check_service(client: httpx.AsyncClient, name: str, url: str | None) 
         return name, {"status": "unavailable", "healthy": False}
 
 
-@router.get("/agents")
-async def agent_health() -> dict:
+async def _collect_service_statuses() -> dict[str, dict]:
     async with httpx.AsyncClient(timeout=3.0) as client:
         checks = await asyncio.gather(*(
             _check_service(client, name, url) for name, url in SERVICES.items()
         ))
-        bug_resource = await _check_service(client, "bug_resource", settings.bug_resource_service_url)
-    services = dict(checks)
-    services[bug_resource[0]] = bug_resource[1]
+    return dict(checks)
+
+
+@router.get("/agents")
+async def agent_health() -> dict:
+    services = await _collect_service_statuses()
     return {
         "services": services,
         "ready": sum(1 for item in services.values() if item["healthy"]),
         "configured": len(services),
     }
+
+
+@public_router.get("/public-agents")
+async def public_agent_status() -> dict[str, dict[str, bool]]:
+    statuses = await _collect_service_statuses()
+    services = {}
+    for name, status in statuses.items():
+        available = status["healthy"]
+        if name == "report_recommendation":
+            available = available and status.get("details", {}).get("configured", True)
+        services[name] = bool(available)
+    return {"services": services}

@@ -1,6 +1,6 @@
 import { apiClient, mocksEnabled } from "./client";
 
-export type LlmProvider = "Ollama" | "OpenAI" | "Claude" | "Gemini";
+export type LlmProvider = "Ollama" | "OpenAI" | "Claude";
 export type NetworkPolicy = "restricted" | "off";
 
 export interface AnalysisCheckOptions {
@@ -10,15 +10,17 @@ export interface AnalysisCheckOptions {
   readonly complexity: boolean;
   readonly automatedRepair: boolean;
   readonly finalValidation: boolean;
+  readonly aiReportRecommendations: boolean;
 }
 
 export const DEFAULT_ANALYSIS_CHECKS: AnalysisCheckOptions = {
   codeQuality: true,
-  security: false,
-  bugResource: false,
+  security: true,
+  bugResource: true,
   complexity: true,
-  automatedRepair: false,
-  finalValidation: false,
+  automatedRepair: true,
+  finalValidation: true,
+  aiReportRecommendations: true,
 };
 
 export interface AnalysisConfiguration {

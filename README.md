@@ -1,8 +1,7 @@
 # Coding validation agent — Sreya's portion
 
-This is the **Orchestrator + Code Quality + Frontend** slice of the
-coding-validation-agent project, built to plug into the microservices
-architecture agreed on for the team:
+This checkout contains the Orchestrator, Code Quality, Frontend, and the
+available teammate agent implementations integrated through HTTP adapters:
 
 - **Sreya** — Orchestrator + Code Quality + Frontend *(this folder)*
 - **Rakshitha** — Fix & Regeneration + Security + Database & Reports
@@ -12,15 +11,39 @@ architecture agreed on for the team:
 
 ```text
 coding-validation-agent/
-├── services/
-│   ├── orchestrator-service/     LangGraph workflow (FastAPI)
-│   └── code-quality-service/     Ruff + Pylint + Radon (FastAPI)
-├── gateway/                     API entry point (FastAPI)
+├── backend/
+│   ├── app/                      Legacy repair prototype (not used by Compose)
+│   ├── evaluation/               JSONL datasets and shared evaluation CLI
+│   ├── gateway/                  API entry point (FastAPI)
+│   ├── services/
+│   │   ├── orchestrator-service/ LangGraph workflow (FastAPI)
+│   │   ├── code-quality-service/ Python linters + generic source checks (FastAPI)
+│   │   ├── security_service/     Bandit, Semgrep, and Gitleaks (FastAPI)
+│   │   ├── validation_service/   Python static validation checks (FastAPI)
+│   │   ├── report-recommendation-service/ Ollama report and recommendations
+│   │   ├── repair-service/       Fix & Regeneration microservice (FastAPI)
+│   │   └── sandbox_service/      Isolated execution API
+│   └── shared/schemas/           Common backend contracts
 ├── frontend/                     React + TypeScript + Vite UI
-├── shared/schemas/                Common contracts (Finding, workflow, etc.)
 └── docker-compose.yml             Runs frontend, Gateway, PostgreSQL,
-                                    Orchestrator, and Code Quality
+                                    Orchestrator, Code Quality, Security,
+                                    Validation, and Repair
 ```
+
+The backend application code is grouped under `backend/`; the frontend and
+Compose entry point remain at the repository root. The Orchestrator is the only
+component that selects and invokes agents in the
+workflow. Its `repair` Compose dependency runs the Fix & Regeneration
+microservice from `backend/services/repair-service`; `backend/app/` is not
+used by Compose. The Orchestrator adapts Security, Validation, Repair, Sandbox, and
+Report/Recommendation APIs to its workflow contracts. It owns workflow order,
+opt-in checks, progress, and result aggregation; report generation runs in its
+own internal service. The optional Ollama stage is explicitly selected per
+analysis; selected source files are sent to the configured Ollama model, and
+generated code suggestions are review-only.
+Bug & Resource analysis remains unavailable unless its service URL is
+configured. The sandbox is enabled in Compose and requires access to the Docker
+socket, so deploy it only with an appropriately isolated Docker host.
 
 ## Running it locally
 
@@ -36,58 +59,170 @@ docker compose up --build -d
 - Gateway: http://localhost:8000 (docs at /docs)
 - Orchestrator: http://localhost:8001 (internal gateway target)
 - Code quality service: http://localhost:8002 (docs at /docs)
+- Security, Validation, Repair, and Report/Recommendation: internal Compose
+   services; not published to host ports
 - PostgreSQL: internal Compose service; data persists in `postgres-data`
 
-The Gateway creates the initial SQLAlchemy schema at startup. Compose supplies
-`GATEWAY_DATABASE_URL` using `POSTGRES_DB`, `POSTGRES_USER`, and
-`POSTGRES_PASSWORD`. Do not commit `.env`. The current schema bootstrap uses
-`create_all`; versioned Alembic migrations are not yet configured.
+The Repair and Report/Recommendation agents can call Ollama on the Docker host at port `11434` by default.
+Set `OLLAMA_HOST_PORT` in `.env` if your host Ollama uses another port, and
+`OLLAMA_MODEL` to select an installed model. The default `qwen2.5-coder:3b`
+may produce weaker repairs than a larger code-capable model. To avoid host-port
+collisions when another stack is running, override `GATEWAY_PORT`,
+`ORCHESTRATOR_PORT`, `QUALITY_PORT`, or `FRONTEND_PORT` in `.env`.
+
+The Repair and Report/Recommendation services use Ollama. Make sure Ollama is
+running on the Docker host with the configured `OLLAMA_MODEL` installed.
+`OLLAMA_HOST_PORT` defaults to `11434`; `OLLAMA_REQUEST_TIMEOUT_SECONDS`
+defaults to 600 seconds to allow local models time to generate code and reports.
+The report option is unchecked by default; source is sent to Ollama only when
+AI recommendations are enabled for an analysis. The existing HTML report can
+be printed or saved as PDF from the results page.
+
+The workflow accepts relative source files in Python, JavaScript, TypeScript,
+Java, C, C++, Go, and C#. The upload screen detects language by extension and
+allows an explicit language selection; mismatches are rejected. A .NET SDK
+project can be selected when its C# sources and `.csproj` file are included.
+One analysis may contain one language; JavaScript and TypeScript may be
+combined, as may C and C++ headers/sources.
+
+Python is the most complete adapter: validation uses Python syntax parsing and
+Flake8, while quality analysis includes Ruff, Pylint, and Radon. Other
+languages use real, bounded compiler/static-analysis checks: ESLint for
+JavaScript, the TypeScript compiler, Checkstyle plus `javac`, Cppcheck for
+C/C++, `go vet`, and the C# compiler or .NET SDK build diagnostics. Security
+checks use Bandit for Python, language-specific Semgrep rules for supported
+source files, and Gitleaks. Non-Python bug/resource checks remain heuristic.
+These languages are not yet equivalent to complete project support: external
+dependencies are not installed, framework-specific checks are limited, and
+uploaded project test suites are not automatically discovered or run.
+
+Repair candidates are checked before being returned: Python uses AST parsing
+and no-new-Ruff-finding checks; JavaScript, TypeScript, Java, C, C++, Go, and
+C# use their corresponding compiler or syntax checker. The orchestrator then
+re-analyzes and validates the candidate in the sandbox. If re-analysis finds
+more findings, lowers the quality score, or cannot complete, the workflow
+retains the best candidate seen so far and does not promote the regressive
+candidate.
+
+The sandbox image installs the compilers and analyzers. Submitted source is
+checked in isolated containers with network disabled, resource limits, a
+read-only project mount, and restricted privileges. A .NET project that needs
+uncached NuGet packages will report a restore/build failure. In the current
+hardened non-root container, the .NET SDK may also be unable to initialize
+NuGet's first-run mutex; this is reported as unavailable rather than passed.
+Standalone C# source validation uses Mono. Non-Python final validation uses
+language-specific compiler/checker results in compile-only mode; runtime
+execution is separate from validation.
+
+The Gateway applies the versioned Alembic migrations at startup. Compose supplies
+the PostgreSQL host, port, database, user, and password separately using
+`POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`; SQLAlchemy builds the
+connection URL so passwords containing URL-reserved characters work correctly.
+Do not commit `.env`. Back up the PostgreSQL `postgres-data` volume before
+upgrades or maintenance; do not use `docker compose down -v` when retaining data.
 
 The code-quality service accepts `POST /analyze` with a `project_id`, relative
-Python `.py` files, and an optional subset of `ruff`, `pylint`, and `radon`.
-It returns the shared findings contract used by the orchestrator. Inputs are
-bounded by `QUALITY_MAX_FILES` and `QUALITY_MAX_FILE_SIZE_BYTES`; analyzer
-failures are returned as low-severity findings while preserving results from
-other analyzers.
+supported source files, and an optional subset of `ruff`, `pylint`, and `radon`
+for Python. It returns the shared findings contract used by the orchestrator.
+Inputs are bounded by `QUALITY_MAX_FILES` and `QUALITY_MAX_FILE_SIZE_BYTES`;
+analyzer failures are surfaced while preserving results from other analyzers.
 
 ### Option B — run each service manually
 
 ```bash
 # Code quality service
-cd services/code-quality-service
+cd backend/services/code-quality-service
 pip install -r requirements.txt
 PYTHONPATH=../.. uvicorn app.main:app --reload --port 8002
 
-# Orchestrator (in a second terminal)
-cd services/orchestrator-service
+# Fix & Regeneration service (in another terminal)
+cd backend/services/repair-service
 pip install -r requirements.txt
-ORCH_QUALITY_SERVICE_URL=http://localhost:8002 PYTHONPATH=../.. \
+OLLAMA_BASE_URL=http://localhost:11434/api/generate OLLAMA_MODEL=qwen2.5-coder:3b \
+   uvicorn app.main:app --reload --port 8004
+
+# Report/recommendation service (in another terminal)
+cd backend/services/report-recommendation-service
+pip install -r requirements.txt
+OLLAMA_BASE_URL=http://localhost:11434/api/generate OLLAMA_MODEL=qwen2.5-coder:3b \
+   uvicorn app.main:app --reload --port 8003
+
+# Orchestrator (in a third terminal)
+cd backend/services/orchestrator-service
+pip install -r requirements.txt
+ORCH_QUALITY_SERVICE_URL=http://localhost:8002 \
+ORCH_REPAIR_SERVICE_URL=http://localhost:8004 \
+ORCH_REPORT_RECOMMENDATION_SERVICE_URL=http://localhost:8003 PYTHONPATH=../.. \
   uvicorn app.main:app --reload --port 8001
 
-# Gateway (in a third terminal)
-cd gateway
+# Gateway (in a fourth terminal)
+cd backend/gateway
 pip install -r requirements.txt
 GATEWAY_ORCHESTRATOR_URL=http://localhost:8001 \
 GATEWAY_DATABASE_URL=sqlite+aiosqlite:///./gateway.db PYTHONPATH=.. \
    uvicorn app.main:app --reload --port 8000
 
-# Frontend (in a fourth terminal)
+# Frontend (in a fifth terminal)
 cd frontend
 npm install
 VITE_API_BASE_URL=http://localhost:8000 npm run dev
 ```
 
-`PYTHONPATH=../..` (pointing at the repo root, two levels up from each
-service folder) is needed because both services import
-`shared.schemas.*` from the repo-level `shared/` package.
+`PYTHONPATH=../..` (pointing at `backend/`, two levels up from each service
+folder) is needed because services import `shared.schemas.*` from
+`backend/shared/`.
 
 ## Running tests
 
 ```bash
-cd services/code-quality-service && PYTHONPATH=../.. pytest
-cd services/orchestrator-service && PYTHONPATH=../.. pytest
-cd gateway && PYTHONPATH=.. pytest
+cd backend/services/code-quality-service && PYTHONPATH=../.. pytest
+cd backend/services/orchestrator-service && PYTHONPATH=../.. pytest
+cd backend/gateway && PYTHONPATH=.. pytest
+python -m pytest backend/evaluation/tests -q
 ```
+
+### Dataset-based agent evaluation
+
+Evaluation datasets are JSONL files in `backend/evaluation/datasets/`. Cases
+identify supported source code and a target (`validation`, `analysis`, `repair`,
+`security`, `bug_resource`, or `workflow`) and declare expected statuses,
+finding codes, optional `expected_findings` rule/severity pairs, and required
+workflow agents. The runner calls the existing service APIs rather than
+duplicating their validation, analysis, repair, security, bug/resource, or
+orchestration logic. JSON reports include per-case actual and expected values,
+assertion failures, durations, and aggregate pass rates.
+These JSONL files are evaluation fixtures, not executable production rule
+configuration. Production checks remain defined by each service's configured
+analyzers and implementation; evaluation expectations assert their returned
+results.
+
+Run all bundled datasets against the Compose services:
+
+```powershell
+docker compose --profile evaluation run --build --rm evaluation
+```
+
+The full run includes repair and the all-agent workflow dataset. It requires
+healthy services and an available configured Ollama model. To run a single
+suite and save its report:
+
+```powershell
+docker compose --profile evaluation run --build --rm evaluation `
+  python -m backend.evaluation.runner `
+  --dataset backend/evaluation/datasets/python_cases.jsonl `
+  --report backend/evaluation/reports/python-report.json
+```
+
+The case contract supports `id`, `language`, `target`, `filename`, `code`,
+optional analyzer `tools`, repair `findings`, workflow `checks`, and target-
+specific expected statuses, finding codes, rule/severity pairs, resolved
+finding IDs, finding count bounds, and required agents. Security and
+Bug/Resource cases call their respective service APIs directly. When running
+the evaluation CLI outside Compose, configure `EVAL_SECURITY_URL` and
+`EVAL_BUG_RESOURCE_URL` if those services use non-default host ports. Its JSON
+report includes aggregate, per-language, and per-agent results. Non-Python validation runs the
+language-specific compiler/checker in compile-only mode; it does not install
+project dependencies or run a full project test suite.
 
 ## Code map and useful commands
 
@@ -101,7 +236,7 @@ Set-Location D:\projects\coding-validation-agent-sreya\coding-validation-agent
 ### List application source files
 
 ```powershell
-Get-ChildItem .\gateway\app, .\services, .\shared, .\frontend\src -Recurse -File |
+Get-ChildItem .\backend\gateway\app, .\backend\services, .\backend\shared, .\frontend\src -Recurse -File |
    Where-Object { $_.Extension -in ".py", ".ts", ".tsx", ".css" } |
    Select-Object -ExpandProperty FullName
 ```
@@ -117,9 +252,9 @@ Get-ChildItem . -Recurse -Filter main.py -File |
 The main Python entry points are:
 
 ```text
-gateway/app/main.py                                  Gateway API
-services/orchestrator-service/app/main.py            LangGraph orchestrator
-services/code-quality-service/app/main.py             Code Quality API
+backend/gateway/app/main.py                                  Gateway API
+backend/services/orchestrator-service/app/main.py            LangGraph orchestrator
+backend/services/code-quality-service/app/main.py             Code Quality API
 ```
 
 ### Find all API routes
@@ -132,40 +267,40 @@ rg "@(app|router)\.(get|post|put|delete)|APIRouter" gateway services -g "*.py"
 
 ```powershell
 rg "workflow|StateGraph|add_node|add_edge|should_retry|ainvoke|astream" `
-   services/orchestrator-service/app -g "*.py"
+   backend/services/orchestrator-service/app -g "*.py"
 ```
 
 ### Find all agent/service clients
 
 ```powershell
-Get-ChildItem .\services\orchestrator-service\app\services -File |
+Get-ChildItem .\backend\services\orchestrator-service\app\services -File |
    Select-Object Name, FullName
 ```
 
 ```powershell
 rg "from app\.services|security_client|quality_client|bug_resource_client|repair_client|sandbox_client|validation_client" `
-   services/orchestrator-service/app -g "*.py"
+   backend/services/orchestrator-service/app -g "*.py"
 ```
 
 ### Find Code Quality tools and their usage
 
 ```powershell
-Get-ChildItem .\services\code-quality-service\app\analyzers -File |
+Get-ChildItem .\backend\services\code-quality-service\app\analyzers -File |
    Select-Object Name, FullName
 ```
 
 ```powershell
 rg "run_ruff|run_pylint|run_radon|ruff|pylint|radon|normalize" `
-   services/code-quality-service services/orchestrator-service -g "*.py"
+   backend/services/code-quality-service backend/services/orchestrator-service -g "*.py"
 ```
 
 Current tool ownership:
 
 ```text
-services/code-quality-service/app/analyzers/ruff_analyzer.py
-services/code-quality-service/app/analyzers/pylint_analyzer.py
-services/code-quality-service/app/analyzers/radon_analyzer.py
-services/code-quality-service/app/parsers/result_normalizer.py
+backend/services/code-quality-service/app/analyzers/ruff_analyzer.py
+backend/services/code-quality-service/app/analyzers/pylint_analyzer.py
+backend/services/code-quality-service/app/analyzers/radon_analyzer.py
+backend/services/code-quality-service/app/parsers/result_normalizer.py
 ```
 
 ### Find frontend pages, components, and API calls
@@ -184,7 +319,7 @@ rg "api\.|fetch\(|EventSource|UploadPage|AnalysisPage|ResultsPage|FindingsReview
 ### Run the automated checks
 
 ```powershell
-Set-Location .\services\orchestrator-service
+Set-Location .\backend\services\orchestrator-service
 $env:PYTHONPATH = "../.."
 .\.venv\Scripts\python.exe -m pytest -q
 
@@ -192,14 +327,14 @@ Set-Location ..\code-quality-service
 $env:PYTHONPATH = "../.."
 .\.venv\Scripts\python.exe -m pytest -q
 
-Set-Location ..\..\frontend
+Set-Location ..\..\..\frontend
 npm run build
 ```
 
 ### Run the complete Docker application
 
 ```powershell
-Set-Location D:\projects\coding-validation-agent-sreya\coding-validation-agent
+Set-Location D:\projects\coding-validation-agent-sreya\coding-validation-agent-frontend
 
 $env:GATEWAY_PORT = "8010"
 $env:ORCHESTRATOR_PORT = "8011"
@@ -249,20 +384,20 @@ From the repository root, use separate terminals for the services:
 
 ```powershell
 # Terminal 1: code-quality service
-Set-Location .\services\code-quality-service
+Set-Location .\backend\services\code-quality-service
 $env:PYTHONPATH = "../.."
 python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8002
 
 # Terminal 2: orchestrator / manager agent
-Set-Location .\services\orchestrator-service
+Set-Location .\backend\services\orchestrator-service
 $env:PYTHONPATH = "../.."
 $env:ORCH_QUALITY_SERVICE_URL = "http://localhost:8002"
 python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --port 8001
 
 # Terminal 3: gateway
-Set-Location .\gateway
+Set-Location .\backend\gateway
 $env:PYTHONPATH = ".."
 $env:GATEWAY_ORCHESTRATOR_URL = "http://localhost:8001"
 python -m pip install -r requirements.txt
@@ -275,11 +410,9 @@ $env:VITE_API_BASE_URL = "http://localhost:8000"
 npm run dev
 ```
 
-Open `http://localhost:5174`. The currently available services are the
-frontend, gateway, orchestrator, and code-quality agent. Security, repair,
-sandbox, validation, and bug/resource services remain commented out in
-`docker-compose.yml`; the orchestrator records those unavailable stages as
-controlled failures and never marks unvalidated code as passed.
+Open `http://localhost:5174`. Docker Compose starts the configured gateway,
+orchestrator, analysis agents, repair, validation, report, and sandbox
+services. The report and repair stages require the configured Ollama model.
 
 Useful checks after the services start:
 
@@ -288,7 +421,7 @@ Invoke-RestMethod http://localhost:8000/health
 Invoke-RestMethod http://localhost:8001/health
 Invoke-RestMethod http://localhost:8002/health
 
-Set-Location .\services\orchestrator-service
+Set-Location .\backend\services\orchestrator-service
 $env:PYTHONPATH = "../.."
 python -m pytest -q
 
@@ -296,7 +429,7 @@ Set-Location ..\code-quality-service
 $env:PYTHONPATH = "../.."
 python -m pytest -q
 
-Set-Location ..\..\frontend
+Set-Location ..\..\..\frontend
 npm run build
 ```
 
@@ -319,14 +452,32 @@ does not create a second orchestration path. Specialized agents can submit
 normalized results with `agent.result`; their internal implementations remain
 independent of the orchestrator.
 
+## Validation and report semantics
+
+The final validation status describes acceptance, not whether the workflow
+request itself completed: `passed` means required execution and validation
+checks passed; `failed` means a required check found a blocker; `needs_review`
+means checks completed with findings for human review; `error` means a required
+service or execution step failed; `blocked` means a prerequisite prevented a
+check from running; and `not_run` means final validation was disabled or
+skipped. An absent result is never treated as a pass.
+
+When post-repair re-analysis completes, the report uses its quality summary
+and remaining findings for final metrics and priorities. Original findings
+remain in the comparison as resolved, unchanged, new, or unverified; scores
+that were not returned are displayed as unavailable rather than estimated.
+The Analysis report and its PDF export use the same report data.
+
 ## SRS coverage and current boundaries
 
 Implemented in this repository: React/Monaco intake and review, Code Quality
 Agent, AST-based Code Analysis, LangGraph coordination, shared finding
 aggregation, bounded repair/validation routing, stage/error history,
-repair-attempt records, report generation, status/SSE progress, and Gateway
-PostgreSQL persistence for projects, source files, analysis runs, findings,
-tool results, workflow events, repairs, validation results, and reports. The
+repair-attempt records, post-repair reruns of enabled analyzers, per-finding
+comparison (with incomplete analyzer results marked partial), report generation,
+status/SSE progress, and Gateway PostgreSQL persistence for projects, source
+files, analysis runs, findings, tool results, workflow events, repairs,
+validation results, and reports. The
 Orchestrator retains its JSON run store as an internal fallback.
 
 The Security, Bug & Resource, Fix & Regeneration, Docker Sandbox, and
@@ -342,7 +493,7 @@ than being fabricated locally.
 ## How this integrates with Rakshitha and Shifa's work
 
 The orchestrator never imports another agent's code directly — it only
-calls HTTP clients in `services/orchestrator-service/app/services/`:
+calls HTTP clients in `backend/services/orchestrator-service/app/services/`:
 
 | Client file | Calls | Owned by |
 |---|---|---|
@@ -357,17 +508,17 @@ Until those services exist, every placeholder client fails **gracefully**
 (returns an empty findings list / a failed validation, never raises) so
 the full LangGraph workflow can already be run and demoed end-to-end.
 Once a teammate's service is ready, add its URL as an env var (see
-`services/orchestrator-service/.env.example`) and uncomment its block in
+`backend/services/orchestrator-service/.env.example`) and uncomment its block in
 `docker-compose.yml` — no orchestrator code needs to change, because the
 integration boundary is already the shared `Finding` contract in
-`shared/schemas/`.
+`backend/shared/schemas/`.
 
 ## Next steps toward the final app
 
-1. Rakshitha and Shifa add their six services under `services/`, each
+1. Rakshitha and Shifa add their six services under `backend/services/`, each
    with its own `Dockerfile` and a `/analyze`, `/repair`, `/execute`, or
-   `/validate` endpoint matching the shapes in `shared/schemas/workflow.py`.
-2. Add an `gateway/` API-entry-point service in front of all of them
+   `/validate` endpoint matching the shapes in `backend/shared/schemas/workflow.py`.
+2. Add a `backend/gateway/` API-entry-point service in front of all of them
    (per the original architecture doc) so the frontend talks to one
    URL instead of the orchestrator directly.
 3. Uncomment the corresponding services in `docker-compose.yml`.

@@ -55,6 +55,11 @@ def test_workflow_runs_end_to_end_with_downstream_boundaries(monkeypatch):
     assert result.get("validation_status") in ("passed", "failed")
     assert result.get("retry_count", 0) <= 3
     assert "final_report" in result
+    assert result["final_report"]["code_structure"]["files"][0]["path"] == "app.py"
+    analyze_stage = next(stage for stage in result["stage_history"] if stage["stage"] == "analyze")
+    assert analyze_stage["agents"]["bug_resource"] == "skipped"
+    assert analyze_stage["agents"]["security"] == "completed"
+    assert analyze_stage["agents"]["quality"] == "completed"
 
     stages = [item["stage"] for item in result.get("stage_history", [])]
     assert stages.index("explain_prioritize") < stages.index("repair")
@@ -242,3 +247,49 @@ def test_workflow_summary_records_quality_gate_and_stop_status(monkeypatch):
     assert summary.get("workflow_status") in {"SUCCESS", "PASSED", "PARTIAL_RESULT", "REVIEW_REQUIRED", "FAILED"}
     assert summary.get("quality_gate") in {"PASS", "FAIL"}
     assert "quality_score" in summary
+
+
+def test_report_recommendation_stage_skips_without_gemini_key(monkeypatch):
+    from app.graph import nodes
+    from app.services import report_recommendation_client
+
+    async def agent_skipped(files):
+        return {"status": "skipped", "message": "Gemini API key is not configured."}
+
+    monkeypatch.setattr(report_recommendation_client, "analyze", agent_skipped)
+    result = asyncio.run(nodes.report_and_recommend({
+        "project_files": {"main.py": "print('hello')\n"},
+        "project_context": {"analysis_checks": {"ai_report_recommendations": True}},
+        "stage_history": [],
+        "workflow_trace": [],
+    }))
+
+    assert result["ai_recommendations_status"]["status"] == "skipped"
+    assert result["code_report"] == {}
+    assert result["stage_history"][-1]["stage"] == "report_recommend"
+
+
+def test_report_recommendation_stage_returns_agent_output(monkeypatch):
+    from app.graph import nodes
+    from app.services import report_recommendation_client
+
+    async def fake_analyze(files):
+        assert files == {"main.py": "print('hello')\n"}
+        return {
+            "status": "completed",
+            "code_report": {"scanned_files": 1, "issues": []},
+            "recommendation_report": {"fixes": [], "suggestions": []},
+        }
+
+    monkeypatch.setattr(report_recommendation_client, "analyze", fake_analyze)
+
+    result = asyncio.run(nodes.report_and_recommend({
+        "project_files": {"main.py": "print('hello')\n"},
+        "project_context": {"analysis_checks": {"ai_report_recommendations": True}},
+        "stage_history": [],
+        "workflow_trace": [],
+    }))
+
+    assert result["ai_recommendations_status"]["status"] == "completed"
+    assert result["code_report"]["scanned_files"] == 1
+    assert result["recommendation_report"]["suggestions"] == []

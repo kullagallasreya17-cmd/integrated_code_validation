@@ -14,6 +14,7 @@ from app.services import (
     quality_client,
     bug_resource_client,
     repair_client,
+    report_recommendation_client,
     sandbox_client,
     validation_client,
 )
@@ -23,7 +24,7 @@ from app.analysis.python_structure import inspect_python_files
 from app.reporting.report_builder import build_report
 
 
-async def understand_project(state: WorkflowState) -> dict:
+def understand_project(state: WorkflowState) -> dict:
     """Light-weight project intake: just confirms we have files and sets
     initial counters. Kept separate from `analyze` so it's easy to later
     add real project-understanding (dependency graph, language detection)
@@ -44,18 +45,22 @@ async def understand_project(state: WorkflowState) -> dict:
     }
 
 
-async def analyze(state: WorkflowState) -> dict:
-    """Fan out to Security, Code Quality, and Bug/Resource agents in
-    parallel, then store each agent's raw findings on state."""
-    files = state.get("project_files", {})
-    context = state.get("project_context", {})
-    project_id = state["project_id"]
-    tools = state.get("tools")
-    checks = _analysis_checks(context)
+def _analysis_agent_flags(checks: dict | None) -> tuple[bool, bool, bool]:
     security_enabled = checks is None or checks["security"]
     quality_enabled = checks is None or checks["code_quality"] or checks["complexity"]
-    resource_enabled = checks is None or checks["bug_resource"]
+    resource_enabled = (checks is None or checks["bug_resource"]) and bool(settings.bug_resource_service_url)
+    return security_enabled, quality_enabled, resource_enabled
 
+
+async def _collect_analysis_responses(
+    project_id: str,
+    files: dict[str, str],
+    context: dict,
+    tools: list[str] | None,
+    security_enabled: bool,
+    quality_enabled: bool,
+    resource_enabled: bool,
+) -> dict[str, dict]:
     calls = []
     agents = []
     if security_enabled:
@@ -75,30 +80,51 @@ async def analyze(state: WorkflowState) -> dict:
             responses[agent] = {"findings": [], "error": f"{agent} failed: {result}"}
         else:
             responses[agent] = result
-    security_res = responses.get("security", {"findings": []})
-    quality_res = responses.get("code_quality", {"findings": []})
-    resource_res = responses.get("bug_resource", {"findings": []})
+    return responses
 
-    agent_errors = [
+
+def _collect_analysis_errors(responses: dict[str, dict]) -> list[dict[str, str]]:
+    return [
         {"agent": agent, "error": result["error"]}
-        for agent, result in (
-            ("security", security_res),
-            ("code_quality", quality_res),
-            ("bug_resource", resource_res),
-        )
+        for agent, result in responses.items()
         if result.get("error")
     ]
-    agent_statuses = {
+
+
+def _analysis_agent_statuses(
+    security_enabled: bool,
+    quality_enabled: bool,
+    resource_enabled: bool,
+    agent_errors: list[dict[str, str]],
+) -> dict[str, str]:
+    statuses = {
         "security": "skipped" if not security_enabled else "completed",
         "quality": "skipped" if not quality_enabled else "completed",
         "bug_resource": "skipped" if not resource_enabled else "completed",
     }
     for error in agent_errors:
-        agent = error["agent"]
-        if agent == "code_quality":
-            agent_statuses["quality"] = "failed"
-        elif agent in agent_statuses:
-            agent_statuses[agent] = "failed"
+        agent = "quality" if error["agent"] == "code_quality" else error["agent"]
+        if agent in statuses:
+            statuses[agent] = "failed"
+    return statuses
+
+
+async def analyze(state: WorkflowState) -> dict:
+    """Fan out to enabled analysis agents and store their raw findings."""
+    files = state.get("project_files", {})
+    context = state.get("project_context", {})
+    project_id = state["project_id"]
+    tools = state.get("tools")
+    flags = _analysis_agent_flags(_analysis_checks(context))
+    quality_enabled = flags[1]
+    responses = await _collect_analysis_responses(
+        project_id, files, context, tools, *flags
+    )
+    security_res = responses.get("security", {"findings": []})
+    quality_res = responses.get("code_quality", {"findings": []})
+    resource_res = responses.get("bug_resource", {"findings": []})
+    agent_errors = _collect_analysis_errors(responses)
+    agent_statuses = _analysis_agent_statuses(*flags, agent_errors)
 
     update = {
         "security_findings": security_res.get("findings", []),
@@ -136,10 +162,11 @@ def _analysis_checks(project_context: dict | None) -> dict | None:
         "complexity": bool(checks.get("complexity", True)),
         "automated_repair": bool(checks.get("automated_repair", True)),
         "final_validation": bool(checks.get("final_validation", True)),
+        "ai_report_recommendations": bool(checks.get("ai_report_recommendations", False)),
     }
 
 
-async def aggregate_findings(state: WorkflowState) -> dict:
+def aggregate_findings(state: WorkflowState) -> dict:
     findings = aggregate(
         state.get("security_findings", []),
         state.get("quality_findings", []),
@@ -154,7 +181,7 @@ async def aggregate_findings(state: WorkflowState) -> dict:
     }
 
 
-async def explain_and_prioritize(state: WorkflowState) -> dict:
+def explain_and_prioritize(state: WorkflowState) -> dict:
     """Create deterministic explanations and repair priority metadata."""
     findings = state.get("findings", [])
     severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -186,6 +213,61 @@ async def explain_and_prioritize(state: WorkflowState) -> dict:
     }
 
 
+async def report_and_recommend(state: WorkflowState) -> dict:
+    checks = _analysis_checks(state.get("project_context"))
+    code_report = {}
+    recommendation_report = {}
+    if checks is None or not checks["ai_report_recommendations"]:
+        status = {"status": "disabled"}
+        stage_status = "skipped"
+    else:
+        try:
+            result = await report_recommendation_client.analyze(state.get("project_files", {}))
+            code_report = result.get("code_report", {})
+            recommendation_report = result.get("recommendation_report", {})
+            if result.get("status") == "skipped":
+                status = {"status": "skipped", "message": result.get("message", "Agent is not configured.")}
+                stage_status = "skipped"
+            else:
+                status = {"status": "completed"}
+                stage_status = "completed"
+        except Exception as exc:  # noqa: BLE001 - optional AI reporting must not fail analysis
+            status = {
+                "status": "failed",
+                "message": f"AI report/recommendation generation failed ({type(exc).__name__}).",
+            }
+            stage_status = "failed"
+
+    return {
+        "code_report": code_report,
+        "recommendation_report": recommendation_report,
+        "ai_recommendations_status": status,
+        "workflow_trace": [*state.get("workflow_trace", []), "AI report and recommendation stage completed"],
+        "stage_history": [*state.get("stage_history", []), {
+            "stage": "report_recommend",
+            "status": stage_status,
+            **({"message": status["message"]} if status.get("message") else {}),
+        }],
+    }
+
+
+def _skipped_stages(checks: dict | None, stage_history: list[dict]) -> list[dict[str, str]]:
+    if checks is None:
+        return []
+    reported_stages = {item.get("stage") for item in stage_history}
+    skipped = []
+    if not checks["automated_repair"] and "repair" not in reported_stages:
+        skipped.append({"stage": "repair", "status": "skipped"})
+    if not checks["final_validation"] and "validate" not in reported_stages:
+        skipped.append({"stage": "validate", "status": "skipped"})
+    if not checks["automated_repair"]:
+        if "reanalyze" not in reported_stages:
+            skipped.append({"stage": "reanalyze", "status": "skipped"})
+        if "compare" not in reported_stages:
+            skipped.append({"stage": "compare", "status": "skipped"})
+    return skipped
+
+
 async def repair(state: WorkflowState) -> dict:
     """Calls the Fix & Regeneration service with the current findings."""
     files = state.get("repaired_code") or state.get("project_files", {})
@@ -193,22 +275,31 @@ async def repair(state: WorkflowState) -> dict:
 
     try:
         result = await repair_client.repair(
-            state["project_id"], files, state.get("findings", []), attempt
+            state["project_id"], files, state.get("findings", [])
         )
     except Exception as exc:  # noqa: BLE001 - convert downstream failure to state
         result = {"repaired_files": [], "error": f"repair failed: {exc}"}
     repaired = {f["path"]: f["content"] for f in result.get("repaired_files", [])}
 
     repair_error = result.get("error")
+    repair_status = result.get("status", "candidate")
     agent_errors = [*state.get("agent_errors", [])]
     if repair_error:
         agent_errors.append({"agent": "repair", "error": repair_error})
     repaired_files = repaired or files
+    if repair_error or repair_status == "failed":
+        repair_stage_status = "failed"
+    elif repair_status == "partial":
+        repair_stage_status = "partial"
+    else:
+        repair_stage_status = "completed"
     attempt_record = {
         "iteration": attempt,
         "mode": result.get("mode", "targeted"),
+        "service_status": result.get("status", "unknown"),
         "changed_files": [path for path in repaired_files if repaired_files[path] != files.get(path)],
-        "outcome": "failed" if repair_error else "candidate",
+        "outcome": "failed" if repair_error or repair_status == "failed" else repair_status,
+        "unresolved_findings": result.get("unresolved_findings", []),
         "error": repair_error,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -219,7 +310,8 @@ async def repair(state: WorkflowState) -> dict:
         "agent_errors": agent_errors,
         "workflow_trace": [*state.get("workflow_trace", []), f"Repair iteration {attempt} requested"],
         "stage_history": [*state.get("stage_history", []), {
-            "stage": "repair", "status": "partial" if repair_error else "completed",
+            "stage": "repair",
+            "status": repair_stage_status,
             "attempt": attempt,
         }],
     }
@@ -255,14 +347,15 @@ async def validate(state: WorkflowState) -> dict:
         result = await validation_client.validate(project_id, files, state.get("findings", []))
     except Exception as exc:  # noqa: BLE001 - convert downstream failure to state
         result = {"passed": False, "error": f"validation failed: {exc}"}
-    passed = bool(result.get("passed"))
+    passed = bool(result.get("passed")) and bool(sandbox_result.get("passed", True))
+    validation_results = {**result, "passed": passed}
     agent_errors = [*state.get("agent_errors", [])]
-    if result.get("error"):
-        agent_errors.append({"agent": "validation", "error": result["error"]})
+    if validation_results.get("error"):
+        agent_errors.append({"agent": "validation", "error": validation_results["error"]})
 
     return {
         "sandbox_result": sandbox_result,
-        "validation_results": result,
+        "validation_results": validation_results,
         "validation_status": "passed" if passed else "failed",
         "agent_errors": agent_errors,
         "workflow_trace": [*state.get("workflow_trace", []), "Validation completed"],
@@ -302,7 +395,7 @@ async def reanalyze(state: WorkflowState) -> dict:
     }
 
 
-async def compare_results(state: WorkflowState) -> dict:
+def compare_results(state: WorkflowState) -> dict:
     """Compare original findings and post-repair quality findings."""
     before = {finding.get("issue") for finding in state.get("findings", [])}
     after = {finding.get("issue") for finding in state.get("reanalysis_findings", [])}
@@ -318,6 +411,7 @@ async def compare_results(state: WorkflowState) -> dict:
         "changed_files": changed_files,
         "improved": len(after) < len(before),
     }
+    final_outcome = "improved" if comparison["improved"] else "needs_review"
     return {
         "comparison": comparison,
         "repair_attempts": [
@@ -327,7 +421,7 @@ async def compare_results(state: WorkflowState) -> dict:
                 "findings_before": len(state.get("findings", [])),
                 "findings_after": len(state.get("reanalysis_findings", [])),
                 "quality_improved": comparison["improved"],
-                "final_outcome": "improved" if comparison["improved"] else "needs_review",
+                "final_outcome": final_outcome,
             },
         ] if state.get("repair_attempts") else [],
         "workflow_trace": [*state.get("workflow_trace", []), "Before and after results compared"],
@@ -337,28 +431,16 @@ async def compare_results(state: WorkflowState) -> dict:
     }
 
 
-async def bump_retry(state: WorkflowState) -> dict:
+def bump_retry(state: WorkflowState) -> dict:
     return {"retry_count": state.get("retry_count", 0) + 1}
 
 
-async def finalize(state: WorkflowState) -> dict:
+def finalize(state: WorkflowState) -> dict:
     """Builds the report returned to the frontend, whether validation
     ultimately passed or the retry budget was exhausted."""
     checks = _analysis_checks(state.get("project_context"))
     stage_history = list(state.get("stage_history", []))
-    if checks is not None:
-        reported_stages = {item.get("stage") for item in stage_history}
-        skipped_stages = []
-        if not checks["automated_repair"] and "repair" not in reported_stages:
-            skipped_stages.append({"stage": "repair", "status": "skipped"})
-        if not checks["final_validation"] and "validate" not in reported_stages:
-            skipped_stages.append({"stage": "validate", "status": "skipped"})
-        if not checks["automated_repair"]:
-            if "reanalyze" not in reported_stages:
-                skipped_stages.append({"stage": "reanalyze", "status": "skipped"})
-            if "compare" not in reported_stages:
-                skipped_stages.append({"stage": "compare", "status": "skipped"})
-        stage_history.extend(skipped_stages)
+    stage_history.extend(_skipped_stages(checks, stage_history))
     stage_history.append({"stage": "finalize", "status": "completed"})
     report_state = {**state, "stage_history": stage_history}
     return {

@@ -5,12 +5,13 @@ import { mocksEnabled } from "../api/client";
 interface ConfigurationPanelProps {
   readonly mode: "analysis" | "admin";
   readonly onChange?: (configuration: AnalysisConfiguration) => void;
-  readonly onConnectionStatusChange?: (status: "unchecked" | "connected" | "unreachable") => void;
+  readonly onConnectionStatusChange?: (status: ConnectionStatus) => void;
 }
 
-const PROVIDERS: LlmProvider[] = ["Ollama", "OpenAI", "Claude", "Gemini"];
+type ConnectionStatus = "unchecked" | "connected" | "unreachable";
+const PROVIDERS: LlmProvider[] = ["Ollama", "OpenAI", "Claude"];
 
-function connectionLabel(value: "unchecked" | "connected" | "unreachable"): string {
+function connectionLabel(value: ConnectionStatus): string {
   if (value === "connected") return "Connected";
   if (value === "unreachable") return "Connection failed";
   return "Not tested";
@@ -20,7 +21,7 @@ export function ConfigurationPanel({ mode, onChange, onConnectionStatusChange }:
   const [configuration, setConfiguration] = useState<AnalysisConfiguration>(DEFAULT_ANALYSIS_CONFIGURATION);
   const [apiKey, setApiKey] = useState("");
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-  const [connection, setConnection] = useState<"unchecked" | "connected" | "unreachable">("unchecked");
+  const [connection, setConnection] = useState<ConnectionStatus>("unchecked");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(mode === "admin");
   const [busy, setBusy] = useState(false);

@@ -1,4 +1,5 @@
-import { AnalysisProgress, DEFAULT_STEPS, type ProgressStep, type StepStatus } from "../components/AnalysisProgress";
+import { AnalysisProgress, type ProgressStep, type StepStatus } from "../components/AnalysisProgress";
+import { DEFAULT_STEPS } from "../components/analysisProgressSteps";
 
 interface AnalysisPageProps {
   /** Index of the step currently in progress, or DEFAULT_STEPS.length once done. */
@@ -26,7 +27,6 @@ export function AnalysisPage({ activeStepIndex, progressMessage, workflowStep, w
       <output className={`workflow-state workflow-state--${workflowStatus}`} aria-live="polite">Workflow: {workflowStatus} · Stage: {workflowStep || "queued"} · Repair retries: {retryCount}</output>
       {progressMessage && <p className="analysis-pulse"><i />{progressMessage}</p>}
       <AnalysisProgress steps={buildSteps(activeStepIndex)} />
-      <div className="analysis-contract"><span>Frontend</span><i>→</i><strong>Orchestrator</strong><i>→</i><span>Code Quality Agent</span><small>Ruff · Pylint · Radon</small></div>
       <p className="analysis-pulse"><i /> Findings and evidence are being assembled in the background</p>
     </section>
   );

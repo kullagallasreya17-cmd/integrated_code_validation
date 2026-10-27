@@ -20,14 +20,15 @@ import { AdminUsersPage } from "./pages/Admin";
 import { AnalysisTabs } from "./analysis/AnalysisTabs";
 import { createProject, getProject } from "./api/projects";
 import { getProjectFiles } from "./api/files";
-import type { ProjectDetail, ProjectFile as ApiProjectFile } from "./api/types";
+import type { PersistedHistoryItem, ProjectDetail, ProjectFile as ApiProjectFile, Report } from "./api/types";
 import { DEFAULT_ANALYSIS_CHECKS, type AnalysisCheckOptions } from "./api/configuration";
 import { AdminSettingsPage } from "./pages/AdminSettings";
-import { useAuth } from "./context/AuthContext";
+import { useAuth } from "./context/AuthContextStore";
 import { mocksEnabled } from "./api/client";
+import { getAnalysisHistory, getReport } from "./api/reports";
 import "./App.css";
 
-type StartHandler = (files: ProjectFile[], tools: QualityTool[], projectName?: string, existingProjectId?: string, checks?: AnalysisCheckOptions) => Promise<void>;
+type StartHandler = (files: ProjectFile[], tools: QualityTool[], projectName?: string, existingProjectId?: string, checks?: AnalysisCheckOptions, sandboxStdin?: string) => Promise<void>;
 
 interface WorkspaceState {
   readonly history: RunHistoryEntry[];
@@ -50,7 +51,7 @@ interface WorkspaceState {
 const WorkspaceContext = createContext<WorkspaceState | null>(null);
 const EMPTY_WORKSPACE: WorkspaceState = {
   history: [], result: null, originalFiles: [], activeStepIndex: 0, workflowStep: "", workflowStatus: "idle", retryCount: 0, runInProgress: false, activeTools: [], activeChecks: DEFAULT_ANALYSIS_CHECKS, errorMessage: null,
-  handleStart: async () => undefined, openHistory: () => undefined, rerun: () => undefined,
+  handleStart: () => Promise.resolve(), openHistory: () => undefined, rerun: () => undefined,
 };
 
 function useWorkspace(): WorkspaceState {
@@ -72,7 +73,7 @@ export default function App() {
   const [activeTools, setActiveTools] = useState<QualityTool[]>([]);
   const [activeChecks, setActiveChecks] = useState<AnalysisCheckOptions>(DEFAULT_ANALYSIS_CHECKS);
   const requestInFlight = useRef(false);
-  const lastRunOptions = useRef<{ readonly tools: QualityTool[]; readonly projectName: string; readonly checks: AnalysisCheckOptions } | null>(null);
+  const lastRunOptions = useRef<{ readonly tools: QualityTool[]; readonly projectName: string; readonly checks: AnalysisCheckOptions; readonly sandboxStdin: string } | null>(null);
   const [history, setHistory] = useState<RunHistoryEntry[]>(() => {
     try {
       return JSON.parse(sessionStorage.getItem("coding-validation-run-history") ?? "[]") as RunHistoryEntry[];
@@ -105,7 +106,7 @@ export default function App() {
     };
     const expireSession = (event: Event) => {
       const detail = (event as CustomEvent<{ from?: string }>).detail;
-      navigate("/login", { replace: true, state: { from: detail?.from ?? `${window.location.pathname}${window.location.search}${window.location.hash}`, expired: true } });
+      void navigate("/login", { replace: true, state: { from: detail?.from ?? `${window.location.pathname}${window.location.search}${window.location.hash}`, expired: true } });
     };
     window.addEventListener("coding-validation:clear-user-data", clearWorkspace);
     window.addEventListener("coding-validation:session-expired", expireSession);
@@ -115,10 +116,10 @@ export default function App() {
     };
   }, [navigate]);
 
-  const handleStart = useCallback(async (files: ProjectFile[], tools: QualityTool[], projectName = "Python project", existingProjectId?: string, checks = DEFAULT_ANALYSIS_CHECKS): Promise<void> => {
+  const handleStart = useCallback(async (files: ProjectFile[], tools: QualityTool[], projectName = "Python project", existingProjectId?: string, checks = DEFAULT_ANALYSIS_CHECKS, sandboxStdin = "", language?: string, projectType: "dotnet" | "single_file" = "single_file"): Promise<void> => {
     if (requestInFlight.current) return;
     requestInFlight.current = true;
-    lastRunOptions.current = { tools, projectName, checks };
+    lastRunOptions.current = { tools, projectName, checks, sandboxStdin };
     setRunInProgress(true);
     setActiveTools(tools);
     setActiveChecks(checks);
@@ -138,19 +139,21 @@ export default function App() {
         complexity: checks.complexity,
         automated_repair: checks.automatedRepair,
         final_validation: checks.finalValidation,
+        ai_report_recommendations: checks.aiReportRecommendations,
       };
-      const projectId = existingProjectId ?? activeProjectId ?? (await createProject({ name: projectName, files, project_context: { analysis_checks: analysisChecks } })).project_id;
+      const projectContext = { analysis_checks: analysisChecks, sandbox_stdin: sandboxStdin, ...(language ? { language } : {}), project_type: projectType };
+      const projectId = existingProjectId ?? activeProjectId ?? (await createProject({ name: projectName, files, project_context: projectContext })).project_id;
       setActiveProjectId(projectId);
-      navigate(`/analysis/${encodeURIComponent(projectId)}`);
+      void navigate(`/analysis/${encodeURIComponent(projectId)}`);
       const response = await api.startAnalysis(
-        { project_id: projectId, files, tools, project_context: { analysis_checks: analysisChecks } },
+        { project_id: projectId, files, tools, language, project_type: projectType, project_context: projectContext },
         (progress: ProgressEvent) => {
           setWorkflowStep(progress.step);
           if (progress.status) setWorkflowStatus(progress.status);
           if (typeof progress.retry_count === "number") setRetryCount(progress.retry_count);
           const stepIndexes: Record<string, number> = {
             upload: 0, understand: 0, analyze: 1, aggregate: 3, explain_prioritize: 4,
-            repair: 5, validate: 6, reanalyze: 7, compare: 8, finalize: 9,
+            report_recommend: 5, repair: 6, validate: 7, reanalyze: 8, compare: 9, finalize: 10,
           };
           setActiveStepIndex(stepIndexes[progress.step] ?? 0);
           setProgressMessage(progress.message);
@@ -162,12 +165,12 @@ export default function App() {
       setRetryCount(response.retry_count);
       setWorkflowStatus("completed");
       setWorkflowStep("finalize");
-      setActiveStepIndex(10);
+      setActiveStepIndex(11);
       setHistory((entries) => [
         { project_id: response.project_id, timestamp: new Date().toISOString(), validation_status: response.validation_status, result: completedRun, originalFiles: files },
         ...entries.filter((entry) => entry.project_id !== response.project_id),
       ]);
-      navigate(`/analysis/${encodeURIComponent(response.project_id)}/results`);
+      void navigate(`/analysis/${encodeURIComponent(response.project_id)}/results`);
     } catch (error) {
       setWorkflowStatus("failed");
       setErrorMessage(error instanceof Error ? error.message : "The analysis could not be completed.");
@@ -182,13 +185,13 @@ export default function App() {
     setResult(entry.result);
     setActiveProjectId(entry.project_id);
     setErrorMessage(null);
-    navigate(`/analysis/${encodeURIComponent(entry.project_id)}/results`);
+    void navigate(`/analysis/${encodeURIComponent(entry.project_id)}/results`);
   }, [navigate]);
 
   const rerun = useCallback((): void => {
     if (originalFiles.length === 0) return;
     const previous = lastRunOptions.current;
-    if (previous) void handleStart(originalFiles, previous.tools, previous.projectName, activeProjectId ?? undefined, previous.checks);
+    if (previous) void handleStart(originalFiles, previous.tools, previous.projectName, activeProjectId ?? undefined, previous.checks, previous.sandboxStdin);
     else void handleStart(originalFiles, ["ruff", "pylint", "radon"], "Python project", activeProjectId ?? undefined);
   }, [activeProjectId, handleStart, originalFiles]);
 
@@ -303,7 +306,7 @@ function UploadRoute() {
   }, [existingProjectId]);
 
   if (existingProjectId && !project && !projectLoadError) return <section className="page"><p>Loading project files...</p></section>;
-  return <UploadPage onStart={(inputFiles, tools, projectName, projectId, checks) => handleStart(inputFiles, tools, projectName, projectId, checks)} history={history} onOpenHistory={openHistory} initialFiles={files} initialProjectName={project?.name} existingProjectId={existingProjectId} projectLoadError={projectLoadError} runInProgress={runInProgress} />;
+  return <UploadPage onStart={(inputFiles, tools, projectName, projectId, checks, sandboxStdin) => handleStart(inputFiles, tools, projectName, projectId, checks, sandboxStdin)} history={history} onOpenHistory={openHistory} initialFiles={files} initialProjectName={project?.name} existingProjectId={existingProjectId} projectLoadError={projectLoadError} runInProgress={runInProgress} />;
 }
 
 function AnalysisRoute() {
@@ -321,17 +324,105 @@ function FindingsRoute() {
 }
 
 function ResultsRoute() {
-  const { result, originalFiles, rerun, history } = useWorkspace();
+  const { result, originalFiles, rerun, history, handleStart } = useWorkspace();
   const { id } = useParams();
-  if (!result) return <section className="page empty-state"><strong>Report data is not loaded in this browser session.</strong><span>{id ? `Run ${id} may be available through the report API.` : "Open a saved history item or start a new analysis."}</span><Link className="btn btn--primary" to="/history">Open history</Link></section>;
-  const completedAt = history.find((entry) => entry.project_id === result.project_id)?.timestamp;
-  return <ResultsPage originalFiles={originalFiles} result={result} completedAt={completedAt} onRerun={rerun} />;
+  if (result && (!id || id === result.project_id || id === result.run_id)) {
+    const completedAt = history.find((entry) => entry.project_id === result.project_id)?.timestamp;
+    return <ResultsPage originalFiles={originalFiles} result={result} completedAt={completedAt} onRerun={rerun} />;
+  }
+  return <PersistedResultsRoute runOrProjectId={id ?? ""} onRerun={(files, name, projectId, tools, checks) => handleStart(files, tools, name, projectId, checks)} />;
 }
 
 function HistoryRoute() {
-  const { history, openHistory } = useWorkspace();
+  const [history, setHistory] = useState<PersistedHistoryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
   const navigate = useNavigate();
-  return <RepairHistoryPage history={history} onOpen={openHistory} onNewAnalysis={() => navigate("/projects/new")} />;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    void getAnalysisHistory(50, controller.signal)
+      .then(setHistory)
+      .catch((reason: unknown) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "History could not be loaded."); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [reloadKey]);
+
+  return <RepairHistoryPage history={history} loading={loading} error={error} onRetry={() => setReloadKey((value) => value + 1)} onOpen={(runId) => navigate(`/reports/${encodeURIComponent(runId)}`)} onNewAnalysis={() => navigate("/projects/new")} />;
+}
+
+interface PersistedResultsRouteProps {
+  readonly runOrProjectId: string;
+  readonly onRerun: (files: ProjectFile[], name: string, projectId: string, tools: QualityTool[], checks: AnalysisCheckOptions, sandboxStdin?: string) => Promise<void>;
+}
+
+function PersistedResultsRoute({ runOrProjectId, onRerun }: Readonly<PersistedResultsRouteProps>) {
+  const [reportData, setReportData] = useState<Report | null>(null);
+  const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    setReportData(null);
+    void getReport(runOrProjectId, controller.signal)
+      .then(async (report) => {
+        if (!report.report) throw new Error(`Report is not ready (run status: ${report.status ?? "unknown"}).`);
+        setReportData(report);
+        try {
+          const fileData = await getProjectFiles(report.project_id, controller.signal);
+          setFiles(fileData.files);
+        } catch {
+          setFiles([]);
+        }
+      })
+      .catch((reason: unknown) => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Report could not be loaded."); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [runOrProjectId, reloadKey]);
+
+  if (loading) return <section className="page" aria-live="polite">Loading persisted report…</section>;
+  if (error || !reportData) return <section className="page empty-state"><strong>Report unavailable</strong><span>{error || "The report API returned no report."}</span><button className="btn btn--primary" onClick={() => setReloadKey((value) => value + 1)}>Retry</button><Link className="btn" to="/history">Open history</Link></section>;
+
+  const rawResult = asRecord(reportData.result);
+  const finalReport = asRecord(reportData.report);
+  const findings = (Array.isArray(rawResult.findings) ? rawResult.findings : finalReport.findings ?? []) as WorkflowRunResponse["findings"];
+  const validationStatus = (rawResult.validation_status ?? finalReport.validation_status ?? "unknown") as WorkflowRunResponse["validation_status"];
+  const hydrated: WorkflowRunResponse = {
+    ...rawResult as unknown as WorkflowRunResponse,
+    run_id: reportData.run_id,
+    project_id: reportData.project_id,
+    project_name: reportData.project_name,
+    validation_status: validationStatus,
+    retry_count: typeof rawResult.retry_count === "number" ? rawResult.retry_count : Number(finalReport.retry_count ?? 0),
+    findings,
+    final_report: finalReport as unknown as WorkflowRunResponse["final_report"],
+  };
+  const checks = finalReport.analysis_checks as Record<string, boolean> | undefined;
+  const activeChecks: AnalysisCheckOptions = checks ? {
+    codeQuality: Boolean(checks.code_quality),
+    security: Boolean(checks.security),
+    bugResource: Boolean(checks.bug_resource),
+    complexity: Boolean(checks.complexity),
+    automatedRepair: Boolean(checks.automated_repair),
+    finalValidation: Boolean(checks.final_validation),
+    aiReportRecommendations: Boolean(checks.ai_report_recommendations),
+  } : DEFAULT_ANALYSIS_CHECKS;
+  const qualityTools = (asRecord(finalReport.quality_summary).tool_runs as Array<{ tool?: string }> | undefined)
+    ?.map((run) => run.tool)
+    .filter((tool): tool is QualityTool => tool === "ruff" || tool === "pylint" || tool === "radon") ?? ["ruff", "pylint", "radon"];
+
+  return <ResultsPage originalFiles={files} result={hydrated} completedAt={reportData.completed_at} onRerun={() => void onRerun(files, reportData.project_name ?? "Python project", reportData.project_id, qualityTools, activeChecks, typeof finalReport.sandbox_stdin === "string" ? finalReport.sandbox_stdin : "")} />;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 interface UnavailablePageProps { readonly title: string; }

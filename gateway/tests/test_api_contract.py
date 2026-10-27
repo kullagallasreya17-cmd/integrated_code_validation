@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from uuid import uuid4
 
 from app.main import app
-from app.routes import analysis
+from app.routes import analysis, system
 
 
 @pytest.fixture
@@ -147,3 +147,23 @@ def test_analysis_run_is_persisted_with_restart_safe_run_id(monkeypatch, client)
     report = client.get(f"/results/{project['project_id']}")
     assert report.status_code == 200
     assert report.json()["report"]["validation_status"] == "pending"
+    report_by_run = client.get(f"/results/{run_id}")
+    assert report_by_run.status_code == 200
+    assert report_by_run.json()["project_id"] == project["project_id"]
+    history = client.get("/api/history")
+    assert history.status_code == 200
+    assert any(item["run_id"] == run_id for item in history.json()["items"])
+
+
+def test_public_agent_health_is_available_without_authentication(monkeypatch):
+    async def healthy_service(_client, name, _url):
+        return name, {"status": "healthy", "healthy": True, "details": {"service": name}}
+
+    monkeypatch.setattr(system, "_check_service", healthy_service)
+    with TestClient(app, base_url="https://testserver") as anonymous_client:
+        public_response = anonymous_client.get("/api/system/public-agents")
+        protected_response = anonymous_client.get("/api/system/agents")
+
+    assert public_response.status_code == 200
+    assert public_response.json()["services"]["code_quality"] is True
+    assert protected_response.status_code == 401

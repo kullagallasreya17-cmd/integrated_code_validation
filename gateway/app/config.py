@@ -7,6 +7,12 @@ class Settings(BaseSettings):
     port: int = 8000
     orchestrator_url: str = "http://orchestrator:8000"
     quality_service_url: str = "http://code-quality:8000"
+    security_service_url: str = "http://security:8000"
+    repair_service_url: str = "http://repair:8000"
+    sandbox_service_url: str = "http://sandbox:8004"
+    validation_service_url: str = "http://validation:8000"
+    bug_resource_service_url: str | None = "http://bug-resource:8000"
+    report_recommendation_service_url: str = "http://report-recommendation:8000"
     database_url: str = "sqlite+aiosqlite:///./gateway.db"
     request_timeout_seconds: float = 120.0
     cors_origins: str = "http://localhost:5174,http://127.0.0.1:5174,http://localhost:5173,http://127.0.0.1:5173"

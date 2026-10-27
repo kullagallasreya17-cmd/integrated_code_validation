@@ -4,7 +4,6 @@ export interface ProgressStep {
   label: string;
   status: StepStatus;
 }
-
 interface AnalysisProgressProps {
   steps: ProgressStep[];
 }
@@ -27,17 +26,3 @@ export function AnalysisProgress({ steps }: Readonly<AnalysisProgressProps>) {
     </ul>
   );
 }
-
-/** Default step list matching the orchestrator's graph stages. */
-export const DEFAULT_STEPS: ProgressStep["label"][] = [
-  "Project uploaded",
-  "Code analysis",
-  "Quality, security & bug analysis",
-  "Finding aggregation",
-  "Explain & prioritize",
-  "Repair",
-  "Validate in sandbox",
-  "Re-analyze repaired code",
-  "Compare results",
-  "Final report",
-];

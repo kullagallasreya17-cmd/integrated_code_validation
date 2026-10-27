@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { deleteProjectFile, getProjectFiles, renameProjectFile, saveProjectFile, validatePythonPath } from "../api/files";
+import { deleteProjectFile, getProjectFiles, renameProjectFile, saveProjectFile, validateProjectFilePath } from "../api/files";
 import { CodeEditor } from "./CodeEditor";
 import type { ProjectFile } from "../api/types";
 import { usePermission } from "../auth/permissions";
@@ -43,7 +43,7 @@ export function ProjectFilesManager({ projectId }: Readonly<ProjectFilesManagerP
 
   async function createFile() {
     try {
-      const path = validatePythonPath(newPath);
+      const path = validateProjectFilePath(newPath);
       if (files.some((file) => file.path === path)) throw new Error("A file with that path already exists.");
       setBusy(true); setError("");
       const file = { path, content: "" };
@@ -66,7 +66,7 @@ export function ProjectFilesManager({ projectId }: Readonly<ProjectFilesManagerP
   async function renameFile() {
     if (!activeFile) return;
     try {
-      const path = validatePythonPath(renamePath);
+      const path = validateProjectFilePath(renamePath);
       if (files.some((file) => file.path === path)) throw new Error("A file with that path already exists.");
       setBusy(true); setError(""); await renameProjectFile(projectId, activeFile.path, path);
       setFiles((items) => items.map((item) => item.path === activeFile.path ? { ...item, path } : item)); setSelectedPath(path); setRenamePath(""); setDirty(false);

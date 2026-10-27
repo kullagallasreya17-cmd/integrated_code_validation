@@ -17,6 +17,16 @@ def test_aggregate_deduplicates_identical_findings():
     assert len(merged) == 1
 
 
+def test_aggregate_preserves_distinct_tool_findings_at_same_location():
+    security = {"file": "a.py", "line_number": 1, "issue": "unsafe_call", "severity": "high", "category": "security", "tool": "bandit"}
+    quality = {"file": "a.py", "line_number": 1, "issue": "unsafe_call", "severity": "medium", "category": "code_quality", "tool": "pylint"}
+
+    merged = aggregate([security], [quality], [])
+
+    assert len(merged) == 2
+    assert {finding["tool"] for finding in merged} == {"bandit", "pylint"}
+
+
 def test_summarize_counts_by_severity():
     findings = [
         {"severity": "critical"},

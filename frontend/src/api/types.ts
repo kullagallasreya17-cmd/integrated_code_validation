@@ -103,13 +103,31 @@ export interface SandboxExecution {
 
 export interface Report {
   readonly project_id: string;
+  readonly run_id?: string;
+  readonly project_name?: string;
   readonly status?: RunStatus;
+  readonly validation_status?: ValidationStatus;
+  readonly started_at?: string;
+  readonly completed_at?: string;
   readonly findings?: Finding[];
+  readonly result?: Record<string, unknown>;
   readonly repairs?: RepairAttempt[];
   readonly validation?: ValidationResult;
   readonly recommendations?: string[];
   readonly report?: Record<string, unknown> | null;
   readonly [key: string]: unknown;
+}
+
+export interface PersistedHistoryItem {
+  readonly run_id: string;
+  readonly project_id: string;
+  readonly project_name: string;
+  readonly status: RunStatus;
+  readonly validation_status: ValidationStatus;
+  readonly started_at?: string;
+  readonly completed_at?: string;
+  readonly finding_count: number;
+  readonly retry_count: number;
 }
 
 export interface HistoryItem {
@@ -148,6 +166,8 @@ export interface WorkflowProgressEvent {
 export interface StartAnalysisRequest {
   readonly project_id: string;
   readonly files: ProjectFile[];
+  readonly language?: string;
+  readonly project_type?: "dotnet" | "single_file";
   readonly project_context?: Record<string, unknown>;
   readonly tools?: string[];
 }

@@ -2,10 +2,14 @@ import type { ProgressEvent, ProjectFile, QualityTool, WorkflowRunResponse } fro
 import { apiBaseUrl, apiClient, mocksEnabled } from "../api/client";
 import type { StartAnalysisResponse } from "../api/types";
 
+const WORKFLOW_TIMEOUT_MS = 90 * 60 * 1000;
+
 // In production this points at the API gateway, not individual agent services.
 export interface StartAnalysisPayload {
   project_id: string;
   files: ProjectFile[];
+  language?: string;
+  project_type?: "dotnet" | "single_file";
   project_context?: Record<string, unknown>;
   tools?: QualityTool[];
 }
@@ -34,7 +38,7 @@ function parseEvent<T>(event: MessageEvent<string>): T {
 }
 
 export const api = {
-  async startAnalysis(payload: StartAnalysisPayload, onProgress: (progress: ProgressEvent) => void, timeoutMs = 10 * 60 * 1000): Promise<WorkflowRunResponse> {
+  async startAnalysis(payload: StartAnalysisPayload, onProgress: (progress: ProgressEvent) => void, timeoutMs = WORKFLOW_TIMEOUT_MS): Promise<WorkflowRunResponse> {
     if (mocksEnabled()) return runMockAnalysis(payload, onProgress);
     const started = await apiClient.postWithProgress<StartAnalysisResponse>("/analysis/run", payload, (percent) => {
       onProgress({ step: "upload", status: "uploading", message: `Sending code to orchestrator: ${percent}%` });
@@ -42,7 +46,8 @@ export const api = {
     const projectId = started.project_id || payload.project_id;
 
     return new Promise((resolve, reject) => {
-      const source = new EventSource(`${apiBaseUrl()}/analysis/stream/${encodeURIComponent(projectId)}`);
+      const workflowId = started.run_id || projectId;
+      const source = new EventSource(`${apiBaseUrl()}/analysis/stream/${encodeURIComponent(workflowId)}`, { withCredentials: true });
       let settled = false;
       const timeout = window.setTimeout(() => finish(() => reject(new Error("Validation timed out while waiting for the orchestrator. You can retry the run."))), timeoutMs);
       const finish = (callback: () => void) => {
@@ -62,6 +67,10 @@ export const api = {
           message: workflowStatusMessage(status, step),
           retry_count: typeof snapshot.retry_count === "number" ? snapshot.retry_count : undefined,
         });
+        if (status === "cancelled") {
+          finish(() => reject(new Error("The analysis workflow was cancelled before validation completed.")));
+          return;
+        }
         if (status === "failed") {
           finish(() => reject(new Error("The orchestrator could not complete this validation run.")));
           return;
@@ -143,7 +152,7 @@ function firstDefined(...values: unknown[]): unknown {
 }
 
 function normalizeValidationStatus(value: unknown): WorkflowRunResponse["validation_status"] {
-  if (value === "passed" || value === "failed" || value === "pending") return value;
+  if (value === "passed" || value === "failed" || value === "pending" || value === "not_run" || value === "blocked" || value === "inconclusive" || value === "needs_review" || value === "error") return value;
   return "unknown";
 }
 
@@ -158,9 +167,12 @@ function toWorkflowRunResponse(value: unknown, projectId: string): WorkflowRunRe
   const retryCount = firstDefined(value.retry_count, nested?.retry_count, reportCandidate.retry_count);
   const arrayValue = (key: string) => optionalArray(value[key], nested?.[key], reportCandidate[key]);
   const recordValue = (key: string) => firstRecord(value[key], nested?.[key], reportCandidate[key]);
+  let analysisId: string | undefined;
+  if (typeof value.analysis_id === "string") analysisId = value.analysis_id;
+  else if (typeof reportCandidate.analysis_id === "string") analysisId = reportCandidate.analysis_id;
   return {
     run_id: typeof value.run_id === "string" ? value.run_id : undefined,
-    analysis_id: typeof value.analysis_id === "string" ? value.analysis_id : typeof reportCandidate.analysis_id === "string" ? reportCandidate.analysis_id : undefined,
+    analysis_id: analysisId,
     project_name: typeof value.project_name === "string" ? value.project_name : undefined,
     project_files: arrayValue("project_files") as ProjectFile[] | undefined,
     findings_reported: reportedFindings !== undefined,
@@ -188,10 +200,13 @@ function toWorkflowRunResponse(value: unknown, projectId: string): WorkflowRunRe
 
 async function runMockAnalysis(payload: StartAnalysisPayload, onProgress: (progress: ProgressEvent) => void): Promise<WorkflowRunResponse> {
   const steps = ["understand", "analyze", "aggregate", "repair", "validate", "finalize"];
-  for (const [index, step] of steps.entries()) {
-    onProgress({ step, status: "working", retry_count: index >= 3 ? 1 : 0, message: `Mock workflow: ${step}` });
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 80));
-  }
+  steps.forEach((step, index) => {
+    window.setTimeout(
+      () => onProgress({ step, status: "working", retry_count: index >= 3 ? 1 : 0, message: `Mock workflow: ${step}` }),
+      index * 80,
+    );
+  });
+  await new Promise<void>((resolve) => window.setTimeout(resolve, steps.length * 80));
   const firstFile = payload.files[0];
   const finding = firstFile ? {
     finding_id: "mock-finding-001",

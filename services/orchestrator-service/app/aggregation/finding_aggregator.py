@@ -3,6 +3,8 @@ Merges findings from Security, Code Quality, and Bug/Resource agents
 into a single ordered list, sorted by severity so the most important
 issues drive the repair step first.
 """
+import json
+
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
@@ -13,12 +15,12 @@ def aggregate(
 ) -> list[dict]:
     merged = [*security_findings, *quality_findings, *resource_findings]
 
-    # De-duplicate on (file, line_number, issue) in case two agents flag
-    # the same underlying problem.
+    # Collapse only exact repeated payloads; same-location findings can still
+    # represent distinct categories, tools, or evidence.
     seen = set()
     deduped = []
     for finding in merged:
-        key = (finding.get("file"), finding.get("line_number"), finding.get("issue"))
+        key = json.dumps(finding, sort_keys=True, separators=(",", ":"))
         if key in seen:
             continue
         seen.add(key)
