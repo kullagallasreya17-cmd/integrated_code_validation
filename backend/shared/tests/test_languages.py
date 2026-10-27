@@ -7,6 +7,7 @@ from shared.languages import (
     detect_language,
     language_for_path,
     source_files,
+    strip_markdown_code_fence,
     validate_project_path,
 )
 
@@ -68,3 +69,32 @@ def test_source_files_excludes_manifests():
         "requirements.txt": "pytest",
         "package.json": "{}",
     }) == {"main.py": "print('ok')"}
+
+
+@pytest.mark.parametrize(
+    ("path", "tag"),
+    [
+        ("main.py", "python"),
+        ("main.js", "javascript"),
+        ("main.ts", "typescript"),
+        ("Main.java", "java"),
+        ("main.c", "c"),
+        ("main.cpp", "cpp"),
+        ("main.go", "go"),
+        ("Main.cs", "csharp"),
+    ],
+)
+def test_strip_markdown_code_fence_for_supported_languages(path, tag):
+    source = f"```{tag}\nclass Main {{}}\n```\n"
+
+    assert strip_markdown_code_fence(path, source) == "class Main {}\n"
+
+
+def test_strip_markdown_code_fence_only_removes_matching_complete_wrapper():
+    source = "```java\nclass Main {}\n```\n"
+
+    assert strip_markdown_code_fence("Main.java", source) == "class Main {}\n"
+    assert strip_markdown_code_fence("Main.java", "\n```JAVA\nclass Main {}\n```\n") == "\nclass Main {}\n"
+    assert strip_markdown_code_fence("Main.java", "```python\nclass Main {}\n```\n") == "```python\nclass Main {}\n```\n"
+    assert strip_markdown_code_fence("Main.java", "class Main {}\n") == "class Main {}\n"
+    assert strip_markdown_code_fence("README.md", source) == source

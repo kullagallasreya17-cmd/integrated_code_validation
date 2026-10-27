@@ -3,7 +3,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,13 @@ from app.services.run_store import (
     prepare_project,
 )
 from app.services.store import file_payload, project_files
-from shared.languages import SOURCE_LANGUAGES, detect_language, is_project_manifest, validate_project_path
+from shared.languages import (
+    SOURCE_LANGUAGES,
+    detect_language,
+    is_project_manifest,
+    strip_markdown_code_fence,
+    validate_project_path,
+)
 
 logger = logging.getLogger(__name__)
 ORCHESTRATOR_UNAVAILABLE = "Orchestrator unavailable"
@@ -36,6 +42,12 @@ class ProjectFileIn(BaseModel):
     @classmethod
     def validate_path(cls, value: str) -> str:
         return validate_project_path(value)
+
+    @field_validator("content")
+    @classmethod
+    def strip_wrapping_code_fence(cls, value: str, info: ValidationInfo) -> str:
+        path = info.data.get("path")
+        return strip_markdown_code_fence(path, value) if path else value
 
 
 class StartAnalysisRequest(BaseModel):

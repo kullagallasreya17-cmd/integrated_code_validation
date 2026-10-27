@@ -164,6 +164,20 @@ def _workflow_status_reason(state: dict) -> str:
             "Repair rejected:",
             "Repair made no source changes",
         )):
+            if state.get("retry_count", 0) >= settings.max_retries:
+                comparison = state.get("comparison") or {}
+                remaining_findings = comparison.get("remaining_findings")
+                remaining_count = (
+                    len(remaining_findings)
+                    if isinstance(remaining_findings, list)
+                    else comparison.get("remaining_original_count", 0) + comparison.get("new_count", 0)
+                )
+                if remaining_count:
+                    return (
+                        f"Repair stopped after {len(attempts)} attempts; "
+                        f"{remaining_count} finding(s) remain for review."
+                    )
+                return f"Repair stopped after {len(attempts)} attempts: {repair_error}"
             return f"Repair needs another attempt: {repair_error}"
         return "Validation completed, but one or more findings require human review."
     if validation_status in {"blocked", "inconclusive"}:
@@ -187,6 +201,20 @@ def _workflow_status_reason(state: dict) -> str:
         )
         quality_gate = final_quality.get("quality_gate_status") or final_quality.get("quality_gate", {}).get("status")
         if quality_gate == "FAIL":
+            validation_result = state.get("validation_results") or {}
+            repair_error = next(
+                (
+                    attempt.get("error")
+                    for attempt in reversed(state.get("repair_attempts", []))
+                    if attempt.get("error")
+                ),
+                None,
+            )
+            if validation_result.get("status") == "passed":
+                reason = "Sandbox/compiler validation passed, but the code-quality gate failed."
+                if repair_error:
+                    reason += f" The repair candidate was rejected: {str(repair_error)[:300]}"
+                return reason
             return "One or more required code-quality thresholds failed."
 
     for error in state.get("agent_errors", []):

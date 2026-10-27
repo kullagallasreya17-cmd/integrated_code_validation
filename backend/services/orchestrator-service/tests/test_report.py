@@ -22,6 +22,31 @@ def test_selected_quality_gate_failure_cannot_report_validation_pass():
 	assert report["workflow_status"] != "SUCCESS"
 
 
+def test_quality_failure_reason_distinguishes_passed_compiler_and_rejected_repair():
+	report = build_report({
+		"project_id": "java-repair-rejected",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": True,
+			"security": True,
+			"bug_resource": True,
+			"complexity": True,
+			"automated_repair": True,
+			"final_validation": True,
+		}},
+		"quality_summary": {"quality_gate_status": "FAIL"},
+		"validation_results": {"status": "passed", "passed": True},
+		"repair_attempts": [{
+			"error": "Repair rejected: java_test.java: public type does not match file name",
+		}],
+	})
+
+	assert report["validation_status"] == "failed"
+	assert "Sandbox/compiler validation passed" in report["workflow_status_reason"]
+	assert "repair candidate was rejected" in report["workflow_status_reason"]
+	assert "java_test.java" in report["workflow_status_reason"]
+
+
 def test_finalizer_persists_effective_validation_status():
 	result = finalize({
 		"project_id": "quality-failure",
@@ -235,6 +260,35 @@ def test_unchanged_failed_retry_does_not_override_validation_of_last_candidate()
 	assert report["repair_status"] == "partial"
 	assert report["workflow_summary"]["repair_status"] == "partial"
 	assert "Sandbox and validation passed" in report["workflow_status_reason"]
+
+
+def test_exhausted_repair_reports_remaining_findings_without_suggesting_another_attempt():
+	report = build_report({
+		"project_id": "exhausted-repair-with-findings",
+		"validation_status": "needs_review",
+		"retry_count": 3,
+		"repair_attempts": [
+			{"outcome": "needs_review", "changed_files": ["main.py"]},
+			{"outcome": "needs_review", "changed_files": ["main.py"]},
+			{"outcome": "needs_review", "changed_files": ["main.py"]},
+			{
+				"outcome": "failed",
+				"changed_files": [],
+				"error": "Repair made no source changes; findings remain unresolved.",
+			},
+		],
+		"comparison": {
+			"status": "complete",
+			"remaining_original_count": 1,
+			"new_count": 1,
+			"remaining_findings": [{"issue": "C0116"}, {"issue": "C0114"}],
+		},
+	})
+
+	assert report["workflow_status"] == "REVIEW_REQUIRED"
+	assert report["workflow_status_reason"] == (
+		"Repair stopped after 4 attempts; 2 finding(s) remain for review."
+	)
 
 
 def test_passed_validation_with_remaining_reanalyzed_findings_requires_review():

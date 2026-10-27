@@ -11,6 +11,7 @@ from app.models import Finding, FileRepair
 from app.models import RepairRequest, RepairResponse
 from app.services.ollama_service import generate_code
 from app.services.validation_service import validate_repair
+from shared.languages import strip_markdown_code_fence
 
 
 def extract_json(response: str) -> dict:
@@ -184,12 +185,13 @@ Return only a JSON object with these fields:
 - code: the complete corrected file
 - explanation: a brief summary of the changes
 - resolved_finding_ids: exact IDs from the findings array that the candidate addresses; use [] if unsure
+The code value must contain only source code, without Markdown code fences.
 
 Use each finding's rule ID, file, line, message, and recommendation to make minimal targeted changes.
 Do not claim a finding is resolved unless the returned code fixes it. The candidate will be re-analyzed,
 so resolved_finding_ids are advisory and must never replace that verification.
 Before returning, check the complete candidate for valid {language} syntax, correct indentation, and undefined names.
-For Java, if a public top-level type name differs from the source filename stem, rename the type declaration to exactly match that stem (case-sensitive); do not rename the submitted file.
+For Java, if a public top-level type name differs from the source filename stem, keep the type name valid and conventional. Since the submitted file path cannot be renamed, remove the public modifier only when that is safe for this standalone source file; never rename the type to an invalid Java identifier.
 Ensure every referenced Java identifier is declared, imported from the correct package, and in scope. Fix every compiler diagnostic provided above.
 Do not repeat a rejected candidate; correct the diagnostics it produced and keep all identifiers in scope.
 Return only exact finding IDs; never invent or change IDs.
@@ -213,6 +215,7 @@ Original source:
         corrected = result.get("code")
         if not isinstance(corrected, str):
             raise ValueError("Model response is missing corrected code")
+        corrected = strip_markdown_code_fence(path, corrected)
         corrected = _safe_autofix(path, corrected, findings, language)
         if not corrected.endswith(("\n", "\r")):
             line_ending = "\r\n" if content.endswith("\r\n") else "\r" if content.endswith("\r") else "\n"

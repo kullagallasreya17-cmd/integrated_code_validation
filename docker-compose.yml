@@ -61,6 +61,9 @@ services:
       context: .
       dockerfile: backend/services/report-recommendation-service/Dockerfile
     environment:
+      - REPORT_RECOMMENDATION_PROVIDER=${REPORT_RECOMMENDATION_PROVIDER:-ollama}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - OLLAMA_BASE_URL=http://host.docker.internal:${OLLAMA_HOST_PORT:-11434}/api/generate
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:3b}
       - OLLAMA_REQUEST_TIMEOUT_SECONDS=${OLLAMA_REQUEST_TIMEOUT_SECONDS:-600}

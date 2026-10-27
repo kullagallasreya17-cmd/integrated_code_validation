@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from app.agent import generate_report_and_recommendations
+from app.agent import generate_gemini_report_and_recommendations, generate_report_and_recommendations
 from shared.languages import detect_language, is_source_path
 
 
@@ -57,7 +57,7 @@ class AnalyzeRequest(BaseModel):
 
 class AnalyzeResponse(BaseModel):
     status: Literal["completed", "skipped"]
-    provider: Literal["ollama"] | None = None
+    provider: Literal["ollama", "gemini"] | None = None
     code_report: dict = Field(default_factory=dict)
     recommendation_report: dict = Field(default_factory=dict)
     message: str | None = None
@@ -65,6 +65,26 @@ class AnalyzeResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict:
+    provider = os.getenv("REPORT_RECOMMENDATION_PROVIDER", "ollama").strip().lower()
+    if provider == "gemini":
+        configured = bool(os.getenv("GEMINI_API_KEY"))
+        return {
+            "status": "ok",
+            "service": "report-recommendation-service",
+            "configured": configured,
+            "provider": "gemini",
+            "provider_ready": configured,
+            "provider_error": None if configured else "GEMINI_API_KEY is not configured.",
+        }
+    if provider != "ollama":
+        return {
+            "status": "ok",
+            "service": "report-recommendation-service",
+            "configured": False,
+            "provider_ready": False,
+            "provider_error": "Unsupported report recommendation provider.",
+        }
+
     ollama_url = os.getenv("OLLAMA_BASE_URL")
     if not ollama_url:
         return {
@@ -112,6 +132,31 @@ async def health() -> dict:
     responses={502: {"description": "AI report/recommendation generation failed"}},
 )
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+    provider = os.getenv("REPORT_RECOMMENDATION_PROVIDER", "ollama").strip().lower()
+    if provider == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return AnalyzeResponse(status="skipped", message="No Gemini API key is configured.")
+        try:
+            code_report, recommendation_report = await generate_gemini_report_and_recommendations(
+                request.files,
+                api_key,
+                model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            )
+        except Exception as exc:  # noqa: BLE001 - keep provider details and secrets out of API responses
+            detail = provider_failure_detail(exc)
+            logger.warning("Gemini report/recommendation request failed (%s): %s", type(exc).__name__, detail)
+            raise HTTPException(status_code=502, detail=detail) from exc
+
+        return AnalyzeResponse(
+            status="completed",
+            provider="gemini",
+            code_report=code_report,
+            recommendation_report=recommendation_report,
+        )
+    if provider != "ollama":
+        return AnalyzeResponse(status="skipped", message="No supported AI report provider is configured.")
+
     ollama_base_url = os.getenv("OLLAMA_BASE_URL")
     if not ollama_base_url:
         return AnalyzeResponse(status="skipped", message="No Ollama endpoint is configured.")

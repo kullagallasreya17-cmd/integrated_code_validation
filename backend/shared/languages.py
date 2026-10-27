@@ -161,6 +161,52 @@ def source_files(files: dict[str, str]) -> dict[str, str]:
     return {path: content for path, content in files.items() if is_source_path(path)}
 
 
+def strip_markdown_code_fence(path: str, content: str) -> str:
+    language = language_for_path(path)
+    if language is None:
+        return content
+
+    lines = content.splitlines(keepends=True)
+    if len(lines) < 3:
+        return content
+
+    first_content_line = next((index for index, line in enumerate(lines) if line.strip()), None)
+    last_content_line = next(
+        (index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()),
+        None,
+    )
+    if first_content_line is None or last_content_line is None or last_content_line - first_content_line < 2:
+        return content
+
+    opening = lines[first_content_line].strip()
+    if (
+        not opening.startswith("```")
+        or opening.startswith("````")
+        or lines[last_content_line].strip() != "```"
+    ):
+        return content
+
+    language_tags = {
+        "python": {"py", "python"},
+        "javascript": {"js", "javascript", "jsx"},
+        "typescript": {"ts", "typescript", "tsx"},
+        "java": {"java"},
+        "c": {"c"},
+        "cpp": {"c++", "cpp"},
+        "go": {"go"},
+        "csharp": {"c#", "cs", "csharp"},
+    }
+    tag = opening[3:].strip().lower()
+    if tag and tag not in language_tags[language]:
+        return content
+
+    return "".join(
+        lines[:first_content_line]
+        + lines[first_content_line + 1:last_content_line]
+        + lines[last_content_line + 1:]
+    )
+
+
 def validate_project_path(value: str) -> str:
     normalized = value.replace("\\", "/").strip()
     path = PurePosixPath(normalized)

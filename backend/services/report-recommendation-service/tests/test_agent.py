@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -126,3 +127,39 @@ def test_ollama_generation_uses_extended_timeout(monkeypatch):
     ))
 
     assert captured["timeout"] == 600
+
+
+def test_gemini_generation_uses_two_typed_requests(monkeypatch):
+    from google import genai
+
+    calls = []
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs["config"].response_schema is agent.CodeReport:
+                return SimpleNamespace(text='{"scanned_files": 1, "issues": []}')
+            return SimpleNamespace(text='{"fixes": [], "suggestions": []}')
+
+    class FakeClient:
+        def __init__(self, api_key, http_options):
+            assert api_key == "test-key"
+            assert http_options.timeout == 120_000
+            self.models = FakeModels()
+
+    monkeypatch.setattr(genai, "Client", FakeClient)
+    code_report, recommendations = asyncio.run(
+        agent.generate_gemini_report_and_recommendations(
+            {"main.java": "class Main {}\n"},
+            api_key="test-key",
+            model_name="gemini-test",
+        )
+    )
+
+    assert len(calls) == 2
+    assert calls[0]["model"] == calls[1]["model"] == "gemini-test"
+    assert calls[0]["config"].response_schema is agent.CodeReport
+    assert calls[1]["config"].response_schema is agent.RecommendationReport
+    assert "Analyze the java project" in calls[0]["contents"]
+    assert code_report == {"scanned_files": 1, "issues": []}
+    assert recommendations == {"fixes": [], "suggestions": []}

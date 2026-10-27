@@ -110,10 +110,12 @@ def test_repair_prompt_uses_the_submitted_language(monkeypatch, language, filena
 def test_java_repair_prompt_includes_filename_and_compiler_constraints(monkeypatch):
     async def generated_response(prompt: str) -> str:
         assert "Language: java" in prompt
-        assert "rename the type declaration to exactly match that stem" in prompt
-        assert "do not rename the submitted file" in prompt
+        assert "without Markdown code fences" in prompt
+        assert "Since the submitted file path cannot be renamed" in prompt
+        assert "remove the public modifier only when that is safe" in prompt
+        assert "never rename the type to an invalid Java identifier" in prompt
         assert "every referenced Java identifier is declared, imported from the correct package, and in scope" in prompt
-        return json.dumps({"code": "class java_test { }\n"})
+        return json.dumps({"code": "```java\nclass java_test { }\n```\n"})
 
     monkeypatch.setattr(repair_engine, "generate_code", generated_response)
     monkeypatch.setattr(repair_engine, "validate_repair", lambda *_args: (True, "validated"))

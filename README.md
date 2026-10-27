@@ -20,7 +20,7 @@ coding-validation-agent/
 │   │   ├── code-quality-service/ Python linters + generic source checks (FastAPI)
 │   │   ├── security_service/     Bandit, Semgrep, and Gitleaks (FastAPI)
 │   │   ├── validation_service/   Python static validation checks (FastAPI)
-│   │   ├── report-recommendation-service/ Ollama report and recommendations
+│   │   ├── report-recommendation-service/ Ollama or Gemini report and recommendations
 │   │   ├── repair-service/       Fix & Regeneration microservice (FastAPI)
 │   │   └── sandbox_service/      Isolated execution API
 │   └── shared/schemas/           Common backend contracts
@@ -70,13 +70,16 @@ may produce weaker repairs than a larger code-capable model. To avoid host-port
 collisions when another stack is running, override `GATEWAY_PORT`,
 `ORCHESTRATOR_PORT`, `QUALITY_PORT`, or `FRONTEND_PORT` in `.env`.
 
-The Repair and Report/Recommendation services use Ollama. Make sure Ollama is
-running on the Docker host with the configured `OLLAMA_MODEL` installed.
+By default, the Repair and Report/Recommendation services use Ollama. Make sure
+Ollama is running on the Docker host with the configured `OLLAMA_MODEL`
+installed. The report/recommendation service can optionally use Gemini by setting
+`REPORT_RECOMMENDATION_PROVIDER=gemini`, `GEMINI_API_KEY`, and `GEMINI_MODEL`;
+Ollama remains the default provider.
 `OLLAMA_HOST_PORT` defaults to `11434`; `OLLAMA_REQUEST_TIMEOUT_SECONDS`
 defaults to 600 seconds to allow local models time to generate code and reports.
-The report option is unchecked by default; source is sent to Ollama only when
-AI recommendations are enabled for an analysis. The existing HTML report can
-be printed or saved as PDF from the results page.
+The report option is unchecked by default; project source is sent to the
+configured AI provider only when recommendations are enabled for an analysis.
+The existing HTML report can be printed or saved as PDF from the results page.
 
 The workflow accepts relative source files in Python, JavaScript, TypeScript,
 Java, C, C++, Go, and C#. The upload screen detects language by extension and

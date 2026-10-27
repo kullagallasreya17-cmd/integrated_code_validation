@@ -6,6 +6,7 @@ from app import main
 
 
 def test_analyze_uses_ollama(monkeypatch):
+    monkeypatch.setenv("REPORT_RECOMMENDATION_PROVIDER", "ollama")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama:11434/api/generate")
     monkeypatch.setenv("OLLAMA_MODEL", "qwen2.5-coder:3b")
 
@@ -24,6 +25,40 @@ def test_analyze_uses_ollama(monkeypatch):
     assert response.json()["status"] == "completed"
     assert response.json()["provider"] == "ollama"
     assert client.get("/health").json()["configured"] is True
+
+
+def test_analyze_skips_gemini_when_api_key_is_missing(monkeypatch):
+    monkeypatch.setenv("REPORT_RECOMMENDATION_PROVIDER", "gemini")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    response = TestClient(main.app).post("/analyze", json={"files": {"main.py": "print(1)\n"}})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "skipped"
+    assert "Gemini API key" in response.json()["message"]
+    assert TestClient(main.app).get("/health").json()["provider_ready"] is False
+
+
+def test_analyze_uses_gemini_when_selected(monkeypatch):
+    monkeypatch.setenv("REPORT_RECOMMENDATION_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
+
+    async def generate(files, api_key, model_name=None):
+        assert files == {"main.py": "print(1)\n"}
+        assert api_key == "test-key"
+        assert model_name == "gemini-test"
+        return {"scanned_files": 1, "issues": []}, {"fixes": [], "suggestions": []}
+
+    monkeypatch.setattr(main, "generate_gemini_report_and_recommendations", generate)
+    client = TestClient(main.app)
+
+    response = client.post("/analyze", json={"files": {"main.py": "print(1)\n"}})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    assert response.json()["provider"] == "gemini"
+    assert client.get("/health").json()["provider_ready"] is True
 
 
 @pytest.mark.parametrize(

@@ -48,5 +48,12 @@ class Settings(BaseSettings):
             database=self.database_name,
         )
 
+    @property
+    def migration_database_url(self) -> str:
+        database_url = self.resolved_database_url
+        if isinstance(database_url, URL):
+            return database_url.render_as_string(hide_password=False)
+        return database_url
+
 
 settings = Settings()

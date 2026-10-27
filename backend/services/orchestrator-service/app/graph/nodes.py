@@ -947,6 +947,20 @@ def should_retry(state: WorkflowState) -> str:
         )
         previous_findings = last_attempt.get("input_findings")
         remaining_findings = state.get("reanalysis_findings", [])
+        repair_error = last_attempt.get("error") or ""
+        repair_needs_revision = repair_error.startswith((
+            "Repair rejected:",
+            "Repair made no source changes",
+            "Model response",
+            "Ollama returned a response that was not valid JSON.",
+        ))
+        if (
+            validation_status == "passed"
+            and repair_needs_revision
+            and remaining_findings
+            and state.get("retry_count", 0) < settings.max_retries
+        ):
+            return "retry"
         no_finding_progress = (
             len(repair_attempts) > 1
             and previous_findings is not None

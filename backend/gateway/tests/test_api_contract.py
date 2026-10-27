@@ -75,6 +75,15 @@ class FakeAsyncClient:
         })
 
 
+def test_analysis_file_strips_matching_markdown_code_fence():
+    file = analysis.ProjectFileIn(
+        path="Main.java",
+        content="```java\npublic class Main {}\n```\n",
+    )
+
+    assert file.content == "public class Main {}\n"
+
+
 def test_project_and_analysis_contract(monkeypatch, client):
     monkeypatch.setattr(analysis.httpx, "AsyncClient", FakeAsyncClient)
 

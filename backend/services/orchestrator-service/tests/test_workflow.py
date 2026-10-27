@@ -1285,12 +1285,16 @@ def test_workflow_stops_retrying_when_same_finding_persists_after_validated_repa
     assert result["final_report"]["comparison"]["remaining_issues"] == ["C0114"]
 
 
-def test_report_recommendation_stage_skips_without_ollama(monkeypatch):
+@pytest.mark.parametrize(
+    "message",
+    ["No Ollama endpoint is configured.", "Gemini API key is not configured."],
+)
+def test_report_recommendation_stage_skips_without_provider(monkeypatch, message):
     from app.graph import nodes
     from app.services import report_recommendation_client
 
     async def agent_skipped(files):
-        return {"status": "skipped", "message": "No Ollama endpoint is configured."}
+        return {"status": "skipped", "message": message}
 
     monkeypatch.setattr(report_recommendation_client, "analyze", agent_skipped)
     result = asyncio.run(nodes.report_and_recommend({

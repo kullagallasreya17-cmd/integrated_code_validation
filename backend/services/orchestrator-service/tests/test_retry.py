@@ -220,6 +220,40 @@ def test_should_retry_rejected_repair_with_diagnostics(monkeypatch):
     assert should_retry(state) == "retry"
 
 
+def test_should_retry_rejected_repair_when_sandbox_validation_passes():
+    state = {
+        "validation_status": "passed",
+        "retry_count": 0,
+        "sandbox_result": {"executed": True, "passed": True},
+        "validation_results": {"status": "passed", "passed": True, "findings": []},
+        "reanalysis_findings": [{"file": "java_test.java", "issue": "LANGUAGE_ANALYZER"}],
+        "stage_history": [{"stage": "reanalyze", "status": "completed"}],
+        "repair_attempts": [{
+            "outcome": "failed",
+            "error": "Repair rejected: java_test.java: public type does not match file name",
+            "changed_files": [],
+        }],
+    }
+
+    assert should_retry(state) == "retry"
+
+
+def test_should_finalize_rejected_repair_when_retry_budget_is_exhausted():
+    state = {
+        "validation_status": "passed",
+        "retry_count": settings.max_retries,
+        "validation_results": {"status": "passed", "passed": True, "findings": []},
+        "reanalysis_findings": [{"file": "java_test.java", "issue": "LANGUAGE_ANALYZER"}],
+        "repair_attempts": [{
+            "outcome": "failed",
+            "error": "Repair rejected: java_test.java: public type does not match file name",
+            "changed_files": [],
+        }],
+    }
+
+    assert should_retry(state) == "finalize"
+
+
 def test_should_retry_rejected_repair_stops_at_retry_limit(monkeypatch):
     state = {
         "validation_status": "needs_review",

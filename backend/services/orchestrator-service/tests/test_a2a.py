@@ -5,9 +5,19 @@ from uuid import uuid4
 
 from app.main import app
 from app import main
+from app.schemas.requests import StartAnalysisRequest
 
 
 client = TestClient(app)
+
+
+def test_workflow_request_strips_java_markdown_code_fences():
+    request = StartAnalysisRequest.model_validate({
+        "project_id": "fenced-java",
+        "files": [{"path": "Main.java", "content": "```java\npublic class Main {}\n```\n"}],
+    })
+
+    assert request.files[0].content == "public class Main {}\n"
 
 
 def test_agent_card_describes_orchestrator_skills():
