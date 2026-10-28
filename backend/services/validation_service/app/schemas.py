@@ -1,10 +1,11 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 
 
 class ValidationRequest(BaseModel):
-    code: str
+    code: str = ""
     filename: str = "main.py"
+    files: dict[str, str] = Field(default_factory=dict)
 
 
 class ValidationFinding(BaseModel):
@@ -34,4 +35,7 @@ class ValidationResponse(BaseModel):
     needs_review: bool = False
     total_findings: int
     findings: List[ValidationFinding]
-    metrics: ValidationMetrics
+    metrics: Optional[ValidationMetrics] = None
+    language: Optional[str] = None
+    validator: Optional[str] = None
+    sandbox_result: Optional[dict] = None

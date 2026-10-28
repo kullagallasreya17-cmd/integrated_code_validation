@@ -136,4 +136,6 @@ def validate_repair(
             )
         if introduced:
             return False, "Repair introduced Ruff findings: " + "; ".join(introduced[:5])
-    return True, "Syntax and no-new-Ruff-findings checks passed."
+        return True, "Syntax and no-new-Ruff-findings checks passed."
+    if original_findings is None or candidate_findings is None:
+        return True, "Syntax passed; Ruff is unavailable, so the no-new-finding check was skipped."

@@ -31,6 +31,7 @@ def test_repair_endpoint_returns_project_level_repair_response():
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert response.json()["repair_status"] == "not_run"
     assert response.json()["repairs"][0]["path"] == "main.py"
     assert response.json()["repairs"][0]["changed"] is False
 
@@ -68,8 +69,8 @@ def test_repair_file_accepts_validated_candidate(monkeypatch):
 
     assert repair.changed is True
     assert repair.regenerated_code == "def add(a, b):\n    return a + b\n"
-    assert repair.resolved_finding_ids == ["finding-1"]
-    assert unresolved == []
+    assert repair.resolved_finding_ids == []
+    assert unresolved == [finding]
 
 
 @pytest.mark.parametrize(
@@ -103,8 +104,8 @@ def test_repair_prompt_uses_the_submitted_language(monkeypatch, language, filena
     ))
 
     assert repair.changed is True
-    assert repair.resolved_finding_ids == ["finding-1"]
-    assert unresolved == []
+    assert repair.resolved_finding_ids == []
+    assert unresolved == [finding]
 
 
 def test_java_repair_prompt_includes_filename_and_compiler_constraints(monkeypatch):
@@ -133,24 +134,24 @@ def test_java_repair_prompt_includes_filename_and_compiler_constraints(monkeypat
 
 
 @pytest.mark.parametrize(
-    ("language", "guidance"),
+    ("language", "filename", "guidance"),
     [
-        ("c", "Removing only the initializer can leave the unused-variable finding unresolved."),
-        ("cpp", "Removing only the initializer can leave the unused-variable finding unresolved."),
-        ("csharp", "diagnostic reports CS0219"),
+        ("c", "main.c", "remove the complete declaration"),
+        ("cpp", "main.cpp", "prefer RAII"),
+        ("csharp", "main.cs", "For CS0219"),
     ],
 )
-def test_repair_prompt_includes_unused_local_guidance(monkeypatch, language, guidance):
+def test_repair_prompt_includes_unused_local_guidance(monkeypatch, language, filename, guidance):
     async def generated_response(prompt: str) -> str:
         assert guidance in prompt
         return json.dumps({"code": "updated source\n"})
 
     monkeypatch.setattr(repair_engine, "generate_code", generated_response)
     monkeypatch.setattr(repair_engine, "validate_repair", lambda *_args: (True, "validated"))
-    finding = Finding(file="main.source", message="Unused local variable")
+    finding = Finding(file=filename, message="Unused local variable")
 
     repair, _ = asyncio.run(repair_engine.repair_file(
-        "main.source",
+        filename,
         "original source\n",
         [finding],
         language=language,
@@ -221,6 +222,7 @@ def test_repair_project_returns_partial_candidate_when_model_omits_finding_ids(m
     assert result.changed_files == ["main.c"]
     assert result.repairs[0].resolved_finding_ids == []
     assert result.unresolved_findings == [finding]
+    assert result.repair_status == "needs_review"
 
 
 def test_repair_file_preserves_original_final_newline(monkeypatch):
@@ -235,7 +237,8 @@ def test_repair_file_preserves_original_final_newline(monkeypatch):
 
     monkeypatch.setattr(repair_engine, "generate_code", generated_response)
     monkeypatch.setattr(repair_engine, "validate_repair", validate_candidate)
-    finding = Finding(finding_id="finding-1", file="main.py", message="Fix this issue")
+    monkeypatch.setattr(validation_service, "_ruff_diagnostics", lambda _code: [])
+    finding = Finding(finding_id="finding-1", file="main.py", rule_id="F401", message="Fix this issue")
 
     repair, unresolved = asyncio.run(repair_engine.repair_file(
         "main.py", "print('original')\n", [finding]
@@ -258,7 +261,8 @@ def test_repair_file_adds_final_newline_to_candidate(monkeypatch):
 
     monkeypatch.setattr(repair_engine, "generate_code", generated_response)
     monkeypatch.setattr(repair_engine, "validate_repair", validate_candidate)
-    finding = Finding(finding_id="finding-1", file="main.py", message="Fix this issue")
+    monkeypatch.setattr(validation_service, "_ruff_diagnostics", lambda _code: [])
+    finding = Finding(finding_id="finding-1", file="main.py", rule_id="F401", message="Fix this issue")
 
     repair, unresolved = asyncio.run(repair_engine.repair_file(
         "main.py", "print('original')", [finding]
@@ -397,6 +401,131 @@ def test_repair_file_does_not_accept_model_claim_when_ruff_finding_remains(monke
     assert unresolved == [finding]
 
 
+def test_js_repair_does_not_trust_claims_for_api_token_and_load_data(monkeypatch):
+    async def generated_response(_prompt: str) -> str:
+        return json.dumps({
+            "code": "const API_TOKEN = 'token';\nasync function loadData() { return 2; }\n",
+            "resolved_finding_ids": ["unused-token", "unused-loader"],
+        })
+
+    monkeypatch.setattr(repair_engine, "generate_code", generated_response)
+    monkeypatch.setattr(repair_engine, "validate_repair", lambda *_args: (True, "node syntax passed"))
+    findings = [
+        Finding(
+            finding_id="unused-token",
+            file="main.js",
+            rule_id="LANGUAGE_ANALYZER",
+            type="code_quality",
+            message="'API_TOKEN' is assigned a value but never used.",
+            tool="ESLint",
+            evidence="no-unused-vars",
+        ),
+        Finding(
+            finding_id="unused-loader",
+            file="main.js",
+            rule_id="LANGUAGE_ANALYZER",
+            type="code_quality",
+            message="'loadData' is defined but never used.",
+            tool="ESLint",
+            evidence="no-unused-vars",
+        ),
+    ]
+
+    repair, unresolved = asyncio.run(repair_engine.repair_file(
+        "main.js",
+        "const API_TOKEN = 'token';\nasync function loadData() { return 1; }\n",
+        findings,
+        language="javascript",
+    ))
+
+    assert repair.changed is True
+    assert repair.resolved_finding_ids == []
+    assert unresolved == findings
+
+
+@pytest.mark.parametrize(
+    ("language", "filename"),
+    [
+        ("python", "main.py"),
+        ("java", "Main.java"),
+        ("javascript", "main.js"),
+        ("typescript", "main.ts"),
+        ("c", "main.c"),
+        ("cpp", "main.cpp"),
+        ("csharp", "Program.cs"),
+        ("go", "main.go"),
+    ],
+)
+def test_repair_project_keeps_unverified_findings_and_multi_finding_context(
+    monkeypatch, language, filename
+):
+    seen_prompts = []
+
+    async def generated_response(prompt: str) -> str:
+        seen_prompts.append(prompt)
+        return json.dumps({
+            "code": "candidate source\n",
+            "explanation": "Applied focused changes.",
+            "resolved_finding_ids": ["finding-a", "finding-b"],
+        })
+
+    monkeypatch.setattr(repair_engine, "generate_code", generated_response)
+    monkeypatch.setattr(repair_engine, "validate_repair", lambda *_args: (True, "syntax passed"))
+    findings = [
+        Finding(finding_id="finding-a", file=filename, message="First diagnostic", evidence="RULE_A"),
+        Finding(finding_id="finding-b", file=filename, message="Second diagnostic", evidence="RULE_B"),
+    ]
+    request = RepairRequest(
+        language=language,
+        files=[
+            CodeFile(path=filename, content="original source\n"),
+            CodeFile(path=f"helper.{filename.rsplit('.', 1)[1]}", content="related source\n"),
+        ],
+        findings=findings,
+    )
+
+    result = asyncio.run(repair_engine.repair_project(request))
+
+    assert "First diagnostic" in seen_prompts[0]
+    assert "Second diagnostic" in seen_prompts[0]
+    assert "related source" in seen_prompts[0]
+    assert result.unresolved_findings == findings
+    assert result.repair_status == "needs_review"
+
+
+@pytest.mark.parametrize(
+    ("language", "filename"),
+    [
+        ("python", "main.py"),
+        ("java", "Main.java"),
+        ("javascript", "main.js"),
+        ("typescript", "main.ts"),
+        ("c", "main.c"),
+        ("cpp", "main.cpp"),
+        ("csharp", "Program.cs"),
+        ("go", "main.go"),
+    ],
+)
+def test_repair_rejects_syntax_or_compilation_failure_for_every_language(
+    monkeypatch, language, filename
+):
+    async def generated_response(_prompt: str) -> str:
+        return json.dumps({"code": "malformed candidate\n"})
+
+    monkeypatch.setattr(repair_engine, "generate_code", generated_response)
+    monkeypatch.setattr(repair_engine, "validate_repair", lambda *_args: (False, "syntax or compiler error"))
+    finding = Finding(file=filename, message="Fix the diagnostic")
+
+    repair, unresolved = asyncio.run(repair_engine.repair_file(
+        filename, "original source\n", [finding], language=language
+    ))
+
+    assert repair.changed is False
+    assert repair.regenerated_code == "original source\n"
+    assert repair.candidate_code == "malformed candidate\n"
+    assert unresolved == [finding]
+
+
 def test_repair_file_reports_ollama_connection_failure(monkeypatch):
     async def unavailable(_prompt: str) -> str:
         raise httpx.ConnectError("connection refused")
@@ -409,6 +538,71 @@ def test_repair_file_reports_ollama_connection_failure(monkeypatch):
     assert repair.changed is False
     assert repair.explanation == "Could not connect to the configured Ollama endpoint."
     assert unresolved == [finding]
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_reason"),
+    [
+        ("", "Ollama returned a response that was not valid JSON."),
+        ("not json", "Ollama returned a response that was not valid JSON."),
+        (json.dumps({"explanation": "No code field"}), "Model response is missing corrected code"),
+    ],
+)
+def test_repair_reports_empty_or_malformed_model_responses(
+    monkeypatch, response, expected_reason
+):
+    async def malformed(_prompt: str) -> str:
+        return response
+
+    monkeypatch.setattr(repair_engine, "generate_code", malformed)
+    finding = Finding(file="main.js", message="Fix this issue")
+
+    repair, unresolved = asyncio.run(repair_engine.repair_file(
+        "main.js", "const value = 1;\n", [finding], language="javascript"
+    ))
+
+    assert repair.changed is False
+    assert expected_reason in repair.explanation
+    assert unresolved == [finding]
+
+
+def test_repair_does_not_verify_python_finding_when_ruff_is_unavailable(monkeypatch):
+    async def generated_response(_prompt: str) -> str:
+        return json.dumps({
+            "code": 'print("ready")\n',
+            "resolved_finding_ids": ["unused-os-import"],
+        })
+
+    monkeypatch.setattr(repair_engine, "generate_code", generated_response)
+    monkeypatch.setattr(repair_engine.shutil, "which", lambda _tool: None)
+    finding = Finding(
+        finding_id="unused-os-import",
+        file="main.py",
+        rule_id="F401",
+        message="`os` imported but unused",
+    )
+
+    repair, unresolved = asyncio.run(repair_engine.repair_file(
+        "main.py", 'import os\nprint("ready")\n', [finding]
+    ))
+
+    assert repair.changed is True
+    assert repair.resolved_finding_ids == []
+    assert unresolved == [finding]
+    assert repair.skipped_checks == ["ruff"]
+
+
+def test_python_syntax_success_does_not_hide_unavailable_ruff_check(monkeypatch):
+    monkeypatch.setattr(validation_service, "_ruff_diagnostics", lambda _code: None)
+
+    valid, message = validation_service.validate_repair(
+        'import os\nprint("ready")\n',
+        'import os\nprint("changed")\n',
+    )
+
+    assert valid is True
+    assert "Ruff is unavailable" in message
+    assert "skipped" in message
 
 
 def test_ollama_repair_uses_extended_timeout(monkeypatch):
@@ -442,7 +636,65 @@ def test_ollama_repair_uses_extended_timeout(monkeypatch):
     asyncio.run(ollama_service.generate_code("repair prompt"))
 
     assert captured["timeout"] == 600
-    assert captured["request"]["format"] == "json"
+    assert captured["request"]["format"] == ollama_service.REPAIR_RESPONSE_SCHEMA
+    assert captured["request"]["system"] == ollama_service.REPAIR_SYSTEM_PROMPT
+    assert captured["request"]["options"] == {"temperature": 0}
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ([], "Ollama returned an invalid response object"),
+        ({}, "Ollama returned an empty response"),
+        ({"response": "  "}, "Ollama returned an empty response"),
+    ],
+)
+def test_ollama_rejects_invalid_or_empty_response_envelopes(monkeypatch, payload, message):
+    from app.services import ollama_service
+
+    class FakeClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            class Response:
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return payload
+
+            return Response()
+
+    monkeypatch.setattr(ollama_service.httpx, "AsyncClient", FakeClient)
+    with pytest.raises(ValueError, match=message):
+        asyncio.run(ollama_service.generate_code("repair prompt"))
+
+
+def test_repair_rejects_empty_code_inside_valid_json(monkeypatch):
+    async def generated_response(_prompt: str) -> str:
+        return json.dumps({
+            "code": " \n ",
+            "explanation": "",
+            "resolved_finding_ids": [],
+        })
+
+    monkeypatch.setattr(repair_engine, "generate_code", generated_response)
+    finding = Finding(file="main.js", message="Fix this issue")
+
+    repair, unresolved = asyncio.run(repair_engine.repair_file(
+        "main.js", "const value = 1;\n", [finding], language="javascript"
+    ))
+
+    assert repair.changed is False
+    assert repair.explanation == "Model returned empty corrected code"
+    assert unresolved == [finding]
 
 
 def test_validate_repair_allows_existing_rule_after_line_shift(monkeypatch):

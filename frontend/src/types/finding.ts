@@ -30,7 +30,8 @@ export interface FinalReport {
   analysis_id?: string;
   workflow_status?: string;
   workflow_status_reason?: string;
-  repair_status?: "not_attempted" | "completed" | "partial" | "failed";
+  repair_status?: "success" | "partial" | "failed" | "needs_review" | "not_run" | "running"
+    | "not_attempted" | "completed";
   analysis_checks?: {
     readonly code_quality?: boolean;
     readonly security?: boolean;
@@ -101,6 +102,8 @@ export interface FinalReport {
     unchanged_count?: number;
     new_count?: number;
     unverified_count?: number;
+    skipped_checks?: string[];
+    skipped_findings?: Finding[];
     remaining_original_count?: number;
     unverified_before_count?: number;
     unverified_after_count?: number;
@@ -191,7 +194,7 @@ export interface WorkflowRunResponse {
   final_report: FinalReport;
 }
 
-export type QualityTool = "ruff" | "pylint" | "radon";
+export type QualityTool = "ruff" | "pylint" | "radon" | "mypy";
 export type SecurityTool = "semgrep" | "bandit" | "gitleaks";
 
 export interface RunHistoryEntry {

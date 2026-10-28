@@ -28,7 +28,7 @@ class AnalyzeRequest(BaseModel):
     project_context: dict = Field(default_factory=dict)
     tools: Optional[list[str]] = Field(
         default=None,
-        description="Subset of ['ruff','pylint','radon'] to run. Defaults to all three.",
+        description="Subset of ['ruff','pylint','radon','mypy'] to run. Defaults to all four.",
     )
 
     @field_validator("files")
@@ -52,7 +52,7 @@ class AnalyzeRequest(BaseModel):
     def validate_tools(cls, value: Optional[list[str]]) -> Optional[list[str]]:
         if value is None:
             return value
-        supported = {"ruff", "pylint", "radon"}
+        supported = {"ruff", "pylint", "radon", "mypy"}
         unknown = set(value) - supported
         if unknown:
             raise ValueError(f"unsupported analysis tool(s): {', '.join(sorted(unknown))}")

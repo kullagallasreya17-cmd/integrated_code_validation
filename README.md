@@ -77,6 +77,9 @@ installed. The report/recommendation service can optionally use Gemini by settin
 Ollama remains the default provider.
 `OLLAMA_HOST_PORT` defaults to `11434`; `OLLAMA_REQUEST_TIMEOUT_SECONDS`
 defaults to 600 seconds to allow local models time to generate code and reports.
+Repair requests use schema-constrained JSON and language-specific instructions.
+Model-reported resolved findings are advisory only: analyzers, validation, and
+the workflow's post-repair re-analysis determine the repair outcome.
 The report option is unchecked by default; project source is sent to the
 configured AI provider only when recommendations are enabled for an analysis.
 The existing HTML report can be printed or saved as PDF from the results page.
@@ -88,24 +91,48 @@ project can be selected when its C# sources and `.csproj` file are included.
 One analysis may contain one language; JavaScript and TypeScript may be
 combined, as may C and C++ headers/sources.
 
-Python is the most complete adapter: validation uses Python syntax parsing and
-Flake8, while quality analysis includes Ruff, Pylint, and Radon. Other
-languages use real, bounded compiler/static-analysis checks: ESLint for
-JavaScript, the TypeScript compiler, Checkstyle plus `javac`, Cppcheck for
-C/C++, `go vet`, and the C# compiler or .NET SDK build diagnostics. Security
-checks use Bandit for Python, language-specific Semgrep rules for supported
-source files, and Gitleaks. Non-Python bug/resource checks remain heuristic.
-These languages are not yet equivalent to complete project support: external
-dependencies are not installed, framework-specific checks are limited, and
-uploaded project test suites are not automatically discovered or run.
+Python quality analysis includes Ruff, Pylint, Radon, and MyPy. Other languages
+use language-specific analyzers in the sandbox: ESLint for JavaScript,
+typescript-eslint plus the TypeScript compiler, Checkstyle/PMD/SpotBugs for
+Java, Cppcheck/Clang-Tidy/Clang Static Analyzer for C and C++, golangci-lint
+plus `go vet`, and .NET SDK Roslyn analyzers for C#. Security checks use
+Bandit, Semgrep, and Gitleaks, with Clang Static Analyzer for C/C++,
+`npm audit` for projects containing a package lockfile, and govulncheck for
+Go modules. The dependency vulnerability scans require access to their
+configured public vulnerability registries; uploaded source is not sent to
+those registries, but dependency manifests are used for their queries.
+Non-Python bug/resource checks remain heuristic.
+
+The additional analyzers improve language coverage but do not by themselves
+make every project type fully supported. External build dependencies are not
+restored in the network-disabled execution sandbox, framework-specific checks
+are limited, and uploaded project test suites are not automatically discovered
+or run. The language registry therefore continues to mark the non-Python
+adapters as partial until project-level build/test support and end-to-end
+validation are available.
+
+The Validation agent applies Python AST/Flake8 checks to Python sources and
+dispatches JavaScript, TypeScript, Java, C, C++, Go, and C# projects to the
+isolated sandbox's language-specific compile-only validation plans. It accepts
+project file maps, returns compiler diagnostics as findings, and reports
+unavailable validators and timeouts as failures rather than passing them.
+Compose configures this connection automatically; when running services
+manually, set `VALIDATION_SANDBOX_SERVICE_URL` to the sandbox API URL.
+These non-Python checks establish compile/syntax validity, not complete
+project correctness or test-suite coverage. Project test suites are not
+automatically discovered or run.
 
 Repair candidates are checked before being returned: Python uses AST parsing
-and no-new-Ruff-finding checks; JavaScript, TypeScript, Java, C, C++, Go, and
-C# use their corresponding compiler or syntax checker. The orchestrator then
-re-analyzes and validates the candidate in the sandbox. If re-analysis finds
-more findings, lowers the quality score, or cannot complete, the workflow
-retains the best candidate seen so far and does not promote the regressive
-candidate.
+and Ruff checks; JavaScript, TypeScript, Java, C, C++, Go, and C# use their
+corresponding compiler or syntax checker. These checks do not prove that a
+quality or security finding was fixed. Model-reported resolved IDs are advisory;
+the orchestrator's post-repair analyzer results determine the final finding
+counts and repair status. A candidate with incomplete analyzer results is
+reported as `needs_review`, not as a successful repair. The final report keeps
+repair status separate from sandbox/validation status. Repair statuses are
+`success`, `partial`, `failed`, `needs_review`, `not_run`, and `running`.
+Repeated candidate snapshots are not retried, and candidates that introduce
+critical/high security findings are rejected.
 
 The sandbox image installs the compilers and analyzers. Submitted source is
 checked in isolated containers with network disabled, resource limits, a
@@ -113,9 +140,9 @@ read-only project mount, and restricted privileges. A .NET project that needs
 uncached NuGet packages will report a restore/build failure. In the current
 hardened non-root container, the .NET SDK may also be unable to initialize
 NuGet's first-run mutex; this is reported as unavailable rather than passed.
-Standalone C# source validation uses Mono. Non-Python final validation uses
-language-specific compiler/checker results in compile-only mode; runtime
-execution is separate from validation.
+Standalone C# validation uses Mono; C# projects use the .NET SDK analyzers.
+Non-Python final validation uses language-specific compiler/checker results in
+compile-only mode; runtime execution is separate from validation.
 
 The Gateway applies the versioned Alembic migrations at startup. Compose supplies
 the PostgreSQL host, port, database, user, and password separately using

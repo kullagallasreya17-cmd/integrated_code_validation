@@ -8,14 +8,13 @@ from app.services.finding_mapper import normalize_finding
 from shared.languages import detect_language, source_files
 
 logger = logging.getLogger(__name__)
-VALIDATION_STATUSES = {"passed", "failed", "needs_review"}
+VALIDATION_STATUSES = {"passed", "failed", "needs_review", "blocked"}
 
 
 async def validate(
     project_id: str,
     files: dict[str, str],
     original_findings: list[dict],
-    sandbox_result: dict | None = None,
 ) -> dict:
     findings = []
     errors = []
@@ -32,28 +31,74 @@ async def validate(
         }
     language = detect_language(list(source_code_files))
     if language != "python":
-        passed = bool(
-            sandbox_result
-            and sandbox_result.get("status") == "completed"
-            and sandbox_result.get("passed", sandbox_result.get("exit_code") == 0)
-        )
-        return {
-            "project_id": project_id,
-            "passed": passed,
-            "status": "passed" if passed else "failed",
-            "findings": [],
-            "findings_count": 0,
-            "validator": (
-                sandbox_result.get("validator")
-                if sandbox_result and sandbox_result.get("validator")
-                else "isolated_static_compilation"
-            ),
-            "message": (
-                f"{language} source passed isolated static compilation."
-                if passed else
-                f"{language} validation did not pass isolated static compilation."
-            ),
-        }
+        try:
+            async with httpx.AsyncClient(timeout=settings.validation_call_timeout_seconds) as client:
+                response = await client.post(
+                    f"{settings.validation_service_url}/validate",
+                    json={"files": files},
+                )
+                response.raise_for_status()
+                result = response.json()
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("valid"), bool)
+                or result.get("status") not in {*VALIDATION_STATUSES, "error"}
+                or not isinstance(result.get("findings"), list)
+            ):
+                raise ValueError("Validation service returned an invalid language validation response.")
+            findings = []
+            for item in result["findings"]:
+                if not isinstance(item, dict):
+                    raise ValueError("Validation service returned a malformed language finding.")
+                findings.append(
+                    normalize_finding(
+                        item,
+                        str(item.get("file") or next(iter(source_code_files))),
+                        "VAL",
+                        len(findings) + 1,
+                        "code_quality",
+                    )
+                )
+            return {
+                "project_id": project_id,
+                "passed": result["valid"],
+                "status": result["status"],
+                "findings": findings,
+                "findings_count": len(findings),
+                "validator": result.get("validator"),
+                "language": result.get("language", language),
+                "error": result.get("error"),
+                "sandbox_result": result.get("sandbox_result"),
+            }
+        except httpx.HTTPError as exc:
+            logger.error(
+                "language_validation_request_failed language=%s exception=%s",
+                language,
+                type(exc).__name__,
+            )
+            return {
+                "project_id": project_id,
+                "passed": False,
+                "status": "error",
+                "findings": [],
+                "findings_count": 0,
+                "error": f"Language validation service request failed: {type(exc).__name__}.",
+            }
+        except (TypeError, ValueError) as exc:
+            logger.error(
+                "language_validation_response_invalid language=%s exception=%s detail=%s",
+                language,
+                type(exc).__name__,
+                exc,
+            )
+            return {
+                "project_id": project_id,
+                "passed": False,
+                "status": "error",
+                "findings": [],
+                "findings_count": 0,
+                "error": str(exc),
+            }
 
     async with httpx.AsyncClient(timeout=settings.validation_call_timeout_seconds) as client:
         for path, content in source_code_files.items():

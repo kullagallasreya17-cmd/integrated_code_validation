@@ -32,16 +32,22 @@ class StubAsyncClient:
         return StubResponse(self.handler(url, json))
 
 
-def test_security_client_adapts_per_file_scan_response(monkeypatch):
+def test_security_client_sends_project_files_and_adapts_project_scan_response(monkeypatch):
     client = StubAsyncClient(lambda _url, _body: {
-        "findings": [{"type": "secret", "severity": "high", "line": 4, "description": "Secret found"}]
+        "status": "completed",
+        "findings": [{"file": "src/main.py", "type": "secret", "severity": "high", "line": 4, "description": "Secret found"}]
     })
     monkeypatch.setattr(security_client.httpx, "AsyncClient", lambda **_kwargs: client)
 
-    result = asyncio.run(security_client.analyze("p1", {"src/main.py": "token = 'x'"}))
+    project_files = {
+        "src/main.py": "token = 'x'",
+        "package.json": "{}",
+        "package-lock.json": "{}",
+    }
+    result = asyncio.run(security_client.analyze("p1", project_files))
 
-    assert client.requests[0][0].endswith("/scan")
-    assert client.requests[0][1] == {"code": "token = 'x'", "filename": "main.py"}
+    assert client.requests[0][0].endswith("/scan-project")
+    assert client.requests[0][1] == {"project_id": "p1", "files": project_files}
     assert result["findings"][0]["file"] == "src/main.py"
     assert result["findings"][0]["category"] == "security"
     assert result["findings"][0]["line_number"] == 4
@@ -174,29 +180,34 @@ def test_validation_client_rejects_missing_response_status(monkeypatch):
 def test_validation_client_uses_sandbox_for_non_python_without_python_endpoint(
     monkeypatch, filename, source
 ):
-    def unexpected_client(**_kwargs):
-        raise AssertionError("non-Python validation must not call the Python-only endpoint")
-
-    monkeypatch.setattr(validation_client.httpx, "AsyncClient", unexpected_client)
+    sandbox_result = {
+        "status": "completed",
+        "executed": True,
+        "passed": True,
+        "exit_code": 0,
+        "validator": "language compiler",
+    }
+    client = StubAsyncClient(lambda _url, _body: {
+        "valid": True,
+        "status": "passed",
+        "findings": [],
+        "validator": "language compiler",
+        "sandbox_result": sandbox_result,
+    })
+    monkeypatch.setattr(validation_client.httpx, "AsyncClient", lambda **_kwargs: client)
 
     result = asyncio.run(validation_client.validate(
         "p1",
         {filename: source},
         [],
-        {
-            "status": "completed",
-            "passed": True,
-            "exit_code": 0,
-            "check_type": "static_compilation",
-            "validator": "compiler",
-        },
     ))
 
-    assert result["validator"] == "compiler"
+    assert client.requests[0][0].endswith("/validate")
+    assert client.requests[0][1] == {"files": {filename: source}}
+    assert result["validator"] == "language compiler"
     assert result["status"] == "passed"
     assert result["passed"] is True
-    assert "static compilation" in result["message"]
-    assert "executed" not in result["message"]
+    assert result["sandbox_result"] == sandbox_result
 
 
 def test_repair_client_adapts_finding_response(monkeypatch):
@@ -217,12 +228,23 @@ def test_repair_client_adapts_finding_response(monkeypatch):
     result = asyncio.run(repair_client.repair(
         "p1",
         {"main.py": "print('broken')\n"},
-        [{"file": "main.py", "description": "Replace broken output", "severity": "high"}],
+        [{
+            "file": "main.py",
+            "description": "Replace broken output",
+            "severity": "high",
+            "rule_id": "RULE-001",
+            "evidence": "diagnostic evidence",
+            "tool": "ESLint",
+        }],
     ))
 
     assert client.requests[0][0].endswith("/repair")
     assert client.requests[0][1]["findings"][0]["severity"] == "high"
+    assert client.requests[0][1]["findings"][0]["rule_id"] == "RULE-001"
+    assert client.requests[0][1]["findings"][0]["evidence"] == "diagnostic evidence"
+    assert client.requests[0][1]["findings"][0]["tool"] == "ESLint"
     assert client.requests[0][1]["files"] == [{"path": "main.py", "content": "print('broken')\n"}]
+    assert result["repair_status"] == "needs_review"
     assert result["repaired_files"] == [{"path": "main.py", "content": "print('fixed')\n"}]
     assert result["repair_details"] == [{
         "path": "main.py",

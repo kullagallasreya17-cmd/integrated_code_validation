@@ -6,6 +6,7 @@ COPY backend/services/validation_service/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/services/validation_service/app ./app
+COPY backend/shared ./shared
 
 EXPOSE 8000
 

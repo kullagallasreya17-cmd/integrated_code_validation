@@ -26,6 +26,25 @@ def test_analyze_returns_findings_response_shape():
     assert "findings_count" in body
 
 
+def test_python_default_tools_include_mypy(monkeypatch):
+    selected = []
+    for tool in ("ruff", "pylint", "radon", "mypy"):
+        monkeypatch.setattr(
+            main,
+            f"run_{tool}",
+            lambda _files, tool=tool: selected.append(tool) or [],
+        )
+
+    response = client.post("/analyze", json={
+        "project_id": "python-default-tool-set",
+        "files": [{"path": "main.py", "content": "value: int = 1\n"}],
+    })
+
+    assert response.status_code == 200
+    assert selected == ["ruff", "pylint", "radon", "mypy"]
+    assert response.json()["quality_summary"]["tool_results"]["mypy"]["status"] == "completed"
+
+
 def test_non_python_analysis_uses_language_specific_analyzer(monkeypatch):
     monkeypatch.setattr(
         main,
@@ -299,6 +318,7 @@ def test_analyze_summarizes_style_and_complexity_categories(monkeypatch):
         "code": "C0116", "message": "Missing function or method docstring", "severity_hint": "low",
     }])
     monkeypatch.setattr(main, "run_pylint", lambda files: [])
+    monkeypatch.setattr(main, "run_mypy", lambda files: [])
     monkeypatch.setattr(main, "run_radon", lambda files: [{
         "source": "radon", "file": "app.py", "line_number": 2,
         "code": "COMPLEXITY_D", "message": "'run' has cyclomatic complexity 22 (grade D)", "severity_hint": "medium",

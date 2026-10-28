@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     analysis_timeout_seconds: int = 30
     max_files: int = 200
     max_file_size_bytes: int = 1_048_576
-    default_tools: list[str] = ["ruff", "pylint", "radon"]
+    default_tools: list[str] = ["ruff", "pylint", "radon", "mypy"]
     quality_gate_error_threshold: int = 0
     quality_gate_warning_threshold: int = 5
     quality_gate_complexity_threshold: int = 3

@@ -17,7 +17,7 @@ interface UploadPageProps {
   runInProgress?: boolean;
 }
 
-const TOOL_OPTIONS: QualityTool[] = ["ruff", "pylint", "radon"];
+const TOOL_OPTIONS: QualityTool[] = ["ruff", "pylint", "radon", "mypy"];
 const LANGUAGE_OPTIONS = SUPPORTED_LANGUAGE_OPTIONS;
 const QUICK_CODE_TEMPLATES: Readonly<Record<string, string>> = {
   python: "def example(value):\n    return value\n",
@@ -33,6 +33,7 @@ const TOOL_DESCRIPTION: Record<QualityTool, string> = {
   ruff: "Fast Python linting and style analysis",
   pylint: "Python code quality and maintainability analysis",
   radon: "Python complexity analysis",
+  mypy: "Python static type checking",
 };
 
 interface AgentHealth {

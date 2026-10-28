@@ -77,7 +77,7 @@ def test_dotnet_project_uses_dotnet_sdk_build():
     plan = _execution_plan(request)
 
     assert plan["check_type"] == "static_compilation"
-    assert ".NET SDK" == plan["validator"]
+    assert plan["validator"] == ".NET SDK Roslyn analyzers"
     assert "dotnet build" in " ".join(plan["command"])
 
 
@@ -85,12 +85,12 @@ def test_dotnet_project_uses_dotnet_sdk_build():
     ("filename", "code", "analyzer"),
     [
         ("main.js", "const unused = 1;\n", "eslint"),
-        ("main.ts", "const value: number = 1;\n", "tsc --noEmit"),
-        ("Main.java", "class Main {}\n", "checkstyle"),
-        ("main.c", "int main(void) { return 0; }\n", "cppcheck"),
-        ("main.cpp", "int main() { return 0; }\n", "cppcheck"),
-        ("main.go", "package main\nfunc main() {}\n", "go vet"),
-        ("Program.cs", "public class Program {}\n", "mcs -r:System.Data -warn:4"),
+        ("main.ts", "const value: number = 1;\n", "@typescript-eslint"),
+        ("Main.java", "class Main {}\n", "pmd check"),
+        ("main.c", "int main(void) { return 0; }\n", "clang-tidy"),
+        ("main.cpp", "int main() { return 0; }\n", "clang-tidy"),
+        ("main.go", "package main\nfunc main() {}\n", "golangci-lint"),
+        ("Program.cs", "public class Program {}\n", "latest-all"),
     ],
 )
 def test_language_analysis_uses_real_static_analyzer(filename, code, analyzer):
@@ -173,7 +173,7 @@ def test_dotnet_analysis_uses_sdk_build():
     plan = _execution_plan(request)
 
     assert plan["check_type"] == "static_analysis"
-    assert plan["validator"] == ".NET SDK"
+    assert plan["validator"] == ".NET SDK Roslyn analyzers"
     assert "dotnet build" in " ".join(plan["command"])
 
 
@@ -227,7 +227,7 @@ def test_go_execution_stages_all_source_files_including_test_suffixes():
     ("mode", "expected_command"),
     [
         ("validation_only", "mcs -r:System.Data -target:library"),
-        ("analysis_only", "mcs -r:System.Data -warn:4"),
+        ("analysis_only", "latest-all"),
         ("execution", "mcs -r:System.Data -out:/tmp/program.exe"),
     ],
 )

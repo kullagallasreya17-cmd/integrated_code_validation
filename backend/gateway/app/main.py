@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import check_database, close_database, initialize_database
-from app.routes import admin, analysis, auth, projects, results, system
+from app.routes import admin, analysis, auth, overview, projects, results, system
 from app.routes import files
 
 
@@ -40,6 +40,7 @@ app.include_router(analysis.router)
 app.include_router(analysis.api_router)
 app.include_router(results.router)
 app.include_router(results.history_router)
+app.include_router(overview.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(system.public_router)

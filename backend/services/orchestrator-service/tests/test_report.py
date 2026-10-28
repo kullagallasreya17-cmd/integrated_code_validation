@@ -174,6 +174,12 @@ def test_successful_retry_can_clear_prior_repair_attempt_error():
 			{"iteration": 1, "outcome": "failed", "error": "Repair rejected: W292"},
 			{"iteration": 2, "outcome": "validated", "validation_status": "passed"},
 		],
+		"comparison": {
+			"status": "complete",
+			"remaining_original_count": 0,
+			"new_count": 0,
+			"resolved_count": 1,
+		},
 		"agent_errors": [{"agent": "repair", "error": "Repair rejected: W292"}],
 	})
 
@@ -250,6 +256,7 @@ def test_unchanged_failed_retry_does_not_override_validation_of_last_candidate()
 			"status": "complete",
 			"remaining_original_count": 1,
 			"new_count": 0,
+			"resolved_count": 1,
 			"remaining_findings": [{"issue": "C0114", "severity": "low"}],
 		},
 		"validation_results": {"status": "passed", "passed": True, "findings": []},
@@ -312,3 +319,38 @@ def test_passed_validation_with_remaining_reanalyzed_findings_requires_review():
 
 	assert report["validation_status"] == "passed"
 	assert report["workflow_status"] == "REVIEW_REQUIRED"
+
+
+def test_repair_status_is_needs_review_when_finding_comparison_is_unavailable():
+	report = build_report({
+		"project_id": "repair-not-verified",
+		"validation_status": "passed",
+		"project_context": {"analysis_checks": {
+			"code_quality": False,
+			"security": False,
+			"bug_resource": False,
+			"complexity": False,
+			"automated_repair": True,
+			"final_validation": True,
+		}},
+		"repair_attempts": [{"changed_files": ["main.js"], "outcome": "validated"}],
+		"comparison": {
+			"status": "partial",
+			"skipped_checks": ["eslint"],
+			"unverified_count": 1,
+		},
+	})
+
+	assert report["validation_status"] == "passed"
+	assert report["repair_status"] == "needs_review"
+	assert report["workflow_status"] != "SUCCESS"
+
+
+def test_repair_status_is_not_run_when_repair_was_disabled():
+	report = build_report({
+		"project_id": "repair-disabled",
+		"validation_status": "not_run",
+		"repair_attempts": [],
+	})
+
+	assert report["repair_status"] == "not_run"

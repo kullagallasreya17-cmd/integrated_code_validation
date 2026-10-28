@@ -450,29 +450,29 @@ def _language_execution_plan(request: CodeRequest, language: str) -> dict:
                 "ESLint",
             ),
             "typescript": (
-                'tsc --noEmit --target ES2020 --module commonjs --skipLibCheck "$@"',
+                'for file do report=$(eslint --no-config-lookup --no-warn-ignored --stdin --stdin-filename "$file" --parser /usr/local/lib/node_modules/@typescript-eslint/parser/dist/index.js --plugin @typescript-eslint --resolve-plugins-relative-to /usr/local/lib/node_modules --rule "no-unused-vars:off" --rule "@typescript-eslint/no-unused-vars:error" --format json < "$file"); code=$?; [ "$code" -le 1 ] || { printf "%s\\n" "$report" >&2; exit "$code"; }; printf "%s" "$report" | node -e \'let input="";process.stdin.on("data",chunk=>input+=chunk);process.stdin.on("end",()=>{for(const file of JSON.parse(input)){for(const message of file.messages){console.log(file.filePath+":"+(message.line||1)+":"+(message.column||1)+": "+message.message)}}})\' || exit $?; done; tsc --noEmit --target ES2020 --module commonjs --skipLibCheck "$@"',
                 [path for path in source_paths if PurePosixPath(path).suffix.lower() in {".ts", ".tsx"}],
-                "TypeScript compiler",
+                "ESLint TypeScript + TypeScript compiler",
             ),
             "java": (
-                'checkstyle -c /opt/coding-validation-checkstyle.xml "$@"; style=$?; mkdir -p /tmp/java-out && javac -Xlint:all -d /tmp/java-out "$@"; compile=$?; [ "$style" -eq 0 ] && [ "$compile" -eq 0 ]',
+                'checkstyle -c /opt/coding-validation-checkstyle.xml "$@"; style=$?; pmd check --no-cache -d "/sandbox/{execution_id}" -R rulesets/java/quickstart.xml -f text; pmd_status=$?; mkdir -p /tmp/java-out && javac -Xlint:all -d /tmp/java-out "$@"; compile=$?; spotbugs_status=0; if [ "$compile" -eq 0 ]; then spotbugs -textui -xml:withMessages -effort:max -low /tmp/java-out > /tmp/spotbugs-report.xml 2>/tmp/spotbugs.stderr; spotbugs_status=$?; if [ "$spotbugs_status" -eq 0 ]; then python -m app.spotbugs_report < /tmp/spotbugs-report.xml; else cat /tmp/spotbugs.stderr >&2; fi; fi; [ "$style" -eq 0 ] && [ "$pmd_status" -eq 0 ] && [ "$compile" -eq 0 ] && [ "$spotbugs_status" -eq 0 ]',
                 [path for path in source_paths if path.lower().endswith(".java")],
-                "JDK compiler",
+                "Checkstyle + PMD + SpotBugs + javac",
             ),
             "c": (
-                'cppcheck --error-exitcode=0 --enable=warning,style,performance,portability --template=gcc --quiet "$@" 2>&1',
+                'cppcheck --error-exitcode=0 --enable=warning,style,performance,portability --template=gcc --quiet "$@" 2>&1; cppcheck_status=$?; clang-tidy --checks=clang-analyzer-* "$@" -- -std=c11; tidy_status=$?; clang --analyze -Xanalyzer -analyzer-output=text "$@" -std=c11; analyzer_status=$?; [ "$cppcheck_status" -eq 0 ] && [ "$tidy_status" -eq 0 ] && [ "$analyzer_status" -eq 0 ]',
                 [path for path in source_paths if path.lower().endswith(".c")],
-                "Cppcheck",
+                "Cppcheck + Clang-Tidy + Clang Static Analyzer",
             ),
             "cpp": (
-                'cppcheck --error-exitcode=0 --enable=warning,style,performance,portability --template=gcc --quiet "$@" 2>&1',
+                'cppcheck --error-exitcode=0 --enable=warning,style,performance,portability --template=gcc --quiet "$@" 2>&1; cppcheck_status=$?; clang-tidy --checks=clang-analyzer-* "$@" -- -std=c++17; tidy_status=$?; clang++ --analyze -Xanalyzer -analyzer-output=text "$@" -std=c++17; analyzer_status=$?; [ "$cppcheck_status" -eq 0 ] && [ "$tidy_status" -eq 0 ] && [ "$analyzer_status" -eq 0 ]',
                 [path for path in source_paths if PurePosixPath(path).suffix.lower() in {".cc", ".cpp", ".cxx"}],
-                "Cppcheck",
+                "Cppcheck + Clang-Tidy + Clang Static Analyzer",
             ),
             "go": (
-                'mkdir -p /tmp/go-src; index=0; for file do index=$((index + 1)); cp "$file" "/tmp/go-src/source-${index}.go"; done; export GO111MODULE=off; go vet /tmp/go-src/*.go',
+                'mkdir -p /tmp/go-src; index=0; for file do index=$((index + 1)); cp "$file" "/tmp/go-src/source-${index}.go"; done; export GO111MODULE=off; go vet /tmp/go-src/*.go; vet_status=$?; cd /tmp/go-src && golangci-lint run --timeout=45s --no-config ./...; lint_status=$?; [ "$vet_status" -eq 0 ] && [ "$lint_status" -eq 0 ]',
                 [path for path in source_paths if path.lower().endswith(".go")],
-                "Go vet",
+                "go vet + golangci-lint",
             ),
             "csharp": (
                 'mcs -r:System.Data -warn:4 -target:library -out:/tmp/validation.dll "$@"',
@@ -488,9 +488,15 @@ def _language_execution_plan(request: CodeRequest, language: str) -> dict:
             ]
             if project_paths:
                 analyzers["csharp"] = (
-                    'mkdir -p /tmp/home /tmp/dotnet-home /tmp/nuget-packages /tmp/dotnet-out /tmp/dotnet-obj && dotnet build "$1" --nologo --verbosity quiet --output /tmp/dotnet-out -p:BaseIntermediateOutputPath=/tmp/dotnet-obj/',
+                    'mkdir -p /tmp/home /tmp/dotnet-home /tmp/nuget-packages /tmp/dotnet-out /tmp/dotnet-obj && dotnet build "$1" --nologo --verbosity quiet --output /tmp/dotnet-out -p:EnableNETAnalyzers=true -p:AnalysisLevel=latest-all -p:BaseIntermediateOutputPath=/tmp/dotnet-obj/',
                     [project_paths[0]],
-                    ".NET SDK",
+                    ".NET SDK Roslyn analyzers",
+                )
+            else:
+                analyzers["csharp"] = (
+                    'mkdir -p /tmp/csharp-src /tmp/dotnet-home /tmp/nuget-packages /tmp/dotnet-out /tmp/dotnet-obj; for file do relative=${file#/sandbox/{execution_id}/}; mkdir -p "/tmp/csharp-src/$(dirname "$relative")"; cp "$file" "/tmp/csharp-src/$relative"; done; printf "%s\\n" \'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework><EnableNETAnalyzers>true</EnableNETAnalyzers><AnalysisLevel>latest-all</AnalysisLevel></PropertyGroup></Project>\' > /tmp/csharp-src/Validation.csproj; dotnet build /tmp/csharp-src/Validation.csproj --nologo --verbosity quiet --output /tmp/dotnet-out -p:EnableNETAnalyzers=true -p:AnalysisLevel=latest-all -p:BaseIntermediateOutputPath=/tmp/dotnet-obj/',
+                    [path for path in source_paths if path.lower().endswith(".cs")],
+                    ".NET SDK Roslyn analyzers",
                 )
         command, arguments, toolchain = analyzers[language]
         if not arguments:
@@ -505,7 +511,7 @@ def _language_execution_plan(request: CodeRequest, language: str) -> dict:
             "command": ["sh", "-c", command, "sandbox-analyze", *arguments],
             "working_directory": "/sandbox",
             "check_type": "static_analysis",
-            "minimum_timeout": 45 if language in {"go", "csharp"} else 0,
+            "minimum_timeout": 60 if language in {"go", "csharp", "java"} else 0,
             "validator": toolchain,
         }
     if request.validation_only:
@@ -554,9 +560,9 @@ def _language_execution_plan(request: CodeRequest, language: str) -> dict:
             ]
             if project_paths:
                 compiler_plans["csharp"] = (
-                    'mkdir -p /tmp/home /tmp/dotnet-home /tmp/nuget-packages /tmp/dotnet-out /tmp/dotnet-obj && dotnet build "$1" --nologo --verbosity quiet --output /tmp/dotnet-out -p:BaseIntermediateOutputPath=/tmp/dotnet-obj/',
+                    'mkdir -p /tmp/home /tmp/dotnet-home /tmp/nuget-packages /tmp/dotnet-out /tmp/dotnet-obj && dotnet build "$1" --nologo --verbosity quiet --output /tmp/dotnet-out -p:EnableNETAnalyzers=true -p:AnalysisLevel=latest-all -p:BaseIntermediateOutputPath=/tmp/dotnet-obj/',
                     [project_paths[0]],
-                    ".NET SDK",
+                    ".NET SDK Roslyn analyzers",
                 )
         command, arguments, toolchain = compiler_plans[language]
         if not arguments:
@@ -781,7 +787,7 @@ def execute_code(request: CodeRequest):
                 "error": result["stderr"][:MAX_OUTPUT],
             })
         if (
-            plan.get("validator") == ".NET SDK"
+            str(plan.get("validator", "")).startswith(".NET SDK")
             and "NuGet-Migrations" in result.get("stderr", "")
             and "Microsoft.DotNet.Configurer" in result.get("stderr", "")
         ):

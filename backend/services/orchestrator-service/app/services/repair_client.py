@@ -11,6 +11,7 @@ def _failed_result(project_id: str, files: dict[str, str], findings: list[dict],
         "project_id": project_id,
         "mode": "targeted",
         "status": "failed",
+        "repair_status": "failed",
         "outcome": "no_change",
         "changed_files": [],
         "repaired_files": [{"path": path, "content": content} for path, content in files.items()],
@@ -36,12 +37,16 @@ async def repair(
             {
                 "finding_id": finding.get("finding_id"),
                 "file": finding.get("file", ""),
-                "line": finding.get("line_number"),
-                "rule_id": finding.get("issue") or finding.get("code"),
+                "line": finding.get("line_number", finding.get("line")),
+                "rule_id": finding.get("rule_id") or finding.get("issue") or finding.get("code"),
                 "type": finding.get("category") or finding.get("issue", "bug"),
+                "category": finding.get("category"),
                 "severity": finding.get("severity", "medium"),
-                "message": finding.get("description") or finding.get("issue", ""),
+                "message": finding.get("description") or finding.get("message") or finding.get("issue", ""),
                 "recommendation": finding.get("recommendation"),
+                "evidence": finding.get("evidence"),
+                "tool": finding.get("tool"),
+                "subcategory": finding.get("subcategory"),
             }
             for finding in findings
         ],
@@ -68,6 +73,13 @@ async def repair(
         return _failed_result(project_id, files, findings, "Repair service returned an invalid response object.")
     if result.get("status") not in {"completed", "partial", "failed"}:
         return _failed_result(project_id, files, findings, "Repair service returned an unknown repair status.")
+    repair_status = result.get("repair_status")
+    if repair_status not in {"success", "partial", "failed", "needs_review", "not_run", "running"}:
+        repair_status = {
+            "completed": "needs_review" if findings else "not_run",
+            "partial": "needs_review",
+            "failed": "failed",
+        }[result["status"]]
 
     repaired_files = dict(files)
     repair_details = []
@@ -88,6 +100,7 @@ async def repair(
     changed_files = [path for path, content in repaired_files.items() if content != files.get(path)]
     if status == "completed" and not changed_files and findings:
         status = "failed"
+        repair_status = "failed"
         error = error or "Repair service returned no changed files; findings remain unresolved."
     if status == "failed" and not error:
         error = next(
@@ -100,11 +113,13 @@ async def repair(
         "project_id": project_id,
         "mode": "targeted",
         "status": status,
+        "repair_status": repair_status,
         "outcome": result.get("outcome", "no_change" if not changed_files else "partially_applied"),
         "changed_files": changed_files,
         "repaired_files": [{"path": path, "content": content} for path, content in repaired_files.items()],
         "unresolved_findings": result.get("unresolved_findings", []),
         "repair_details": repair_details,
         "validation_status": result.get("validation_status"),
+        "skipped_checks": result.get("skipped_checks", []),
         "error": error,
     }

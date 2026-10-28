@@ -127,9 +127,17 @@ def test_workflow_runs_selected_agents_for_every_supported_language(
             "validator": "test compiler",
         }
 
-    async def validation(*_args, **_kwargs):
+    async def validation(_project_id, files, *_args, **_kwargs):
         calls.append("validation")
-        return {"status": "passed", "passed": True, "findings": []}
+        result = {"status": "passed", "passed": True, "findings": []}
+        if not next(iter(files)).endswith(".py"):
+            result["sandbox_result"] = {
+                "status": "completed",
+                "executed": True,
+                "passed": True,
+                "exit_code": 0,
+            }
+        return result
 
     monkeypatch.setattr(security_client, "analyze", security)
     monkeypatch.setattr(quality_client, "analyze", quality)
@@ -163,7 +171,9 @@ def test_workflow_runs_selected_agents_for_every_supported_language(
     assert "repair" in calls
     assert "validation" in calls
     assert ("quality", ["ruff"] if language == "python" else None) in calls
-    assert ("sandbox", language != "python") in calls
+    assert ("sandbox", False) in calls if language == "python" else not any(
+        call[0] == "sandbox" for call in calls if isinstance(call, tuple)
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -365,8 +375,16 @@ def test_workflow_retries_repair_after_passed_sandbox_when_findings_remain(monke
     async def sandbox(*_args, **_kwargs):
         return {"status": "completed", "executed": True, "passed": True, "exit_code": 0}
 
-    async def validation(*_args, **_kwargs):
-        return {"passed": True, "status": "passed", "findings": [], "error": None}
+    async def validation(_project_id, files, *_args, **_kwargs):
+        result = {"passed": True, "status": "passed", "findings": [], "error": None}
+        if not next(iter(files)).endswith(".py"):
+            result["sandbox_result"] = {
+                "status": "completed",
+                "executed": True,
+                "passed": True,
+                "exit_code": 0,
+            }
+        return result
 
     monkeypatch.setattr(security_client, "analyze", no_findings)
     monkeypatch.setattr(bug_resource_client, "analyze", no_findings)
@@ -572,6 +590,52 @@ def test_validation_runs_against_repaired_source(monkeypatch):
     assert result["validation_status"] == "passed"
 
 
+def test_failed_candidate_validation_rolls_back_to_original_files(monkeypatch):
+    from app.graph import nodes
+    from app.services import sandbox_client, validation_client
+
+    original = {"main.py": "print('original')\n"}
+    candidate = {"main.py": "print('broken candidate')\n"}
+
+    async def sandbox_failure(_project_id, files, *_args, **_kwargs):
+        assert files == candidate
+        return {
+            "status": "failed",
+            "executed": True,
+            "passed": False,
+            "exit_code": 1,
+            "stderr": "candidate test failed",
+        }
+
+    async def validation_failure(_project_id, files, *_args, **_kwargs):
+        assert files == candidate
+        return {"passed": False, "status": "failed", "findings": [], "error": None}
+
+    monkeypatch.setattr(sandbox_client, "execute", sandbox_failure)
+    monkeypatch.setattr(validation_client, "validate", validation_failure)
+    result = asyncio.run(nodes.validate({
+        "project_id": "rollback-invalid-candidate",
+        "project_files": original,
+        "repaired_code": candidate,
+        "findings": [{"file": "main.py", "issue": "F401"}],
+        "reanalysis_findings": [],
+        "reanalysis_summary": {},
+        "stage_history": [],
+        "agent_errors": [],
+        "repair_attempts": [{
+            "outcome": "partial",
+            "changed_files": ["main.py"],
+            "candidate_files": candidate,
+        }],
+        "workflow_trace": [],
+    }))
+
+    assert result["repaired_code"] == original
+    assert result["reanalysis_findings"] == [{"file": "main.py", "issue": "F401"}]
+    assert result["repair_attempts"][-1]["candidate_rollback"] is True
+    assert "candidate test failed" in result["repair_attempts"][-1]["candidate_rejection_reason"]
+
+
 def test_validation_service_error_is_not_reported_as_blocked_or_success(monkeypatch):
     from app.graph import nodes
     from app.services import sandbox_client, validation_client
@@ -673,6 +737,68 @@ def test_reanalysis_runs_all_selected_analysis_agents(monkeypatch):
     assert result["reanalysis_summary"] == {"overall_score": 90}
     assert result["stage_history"][-1]["status"] == "completed"
     assert set(result["stage_history"][-1]["agents"].values()) == {"completed"}
+
+
+def test_reanalysis_rejects_new_critical_security_finding_without_total_count_increase(monkeypatch):
+    from app.graph import nodes
+    from app.services import bug_resource_client, quality_client, security_client
+
+    async def security(*_args, **_kwargs):
+        return {"findings": [{
+            "file": "main.js",
+            "issue": "SEC-001",
+            "category": "security",
+            "severity": "critical",
+            "tool": "semgrep",
+        }]}
+
+    async def no_quality(*_args, **_kwargs):
+        return {"findings": [], "quality_summary": {"quality_score": 90}}
+
+    async def no_bugs(*_args, **_kwargs):
+        return {"findings": []}
+
+    monkeypatch.setattr(nodes, "_analysis_agent_flags", lambda _checks: (True, True, True))
+    monkeypatch.setattr(security_client, "analyze", security)
+    monkeypatch.setattr(quality_client, "analyze", no_quality)
+    monkeypatch.setattr(bug_resource_client, "analyze", no_bugs)
+    safe_files = {"main.js": "const value = 1;\n"}
+    result = asyncio.run(nodes.reanalyze({
+        "project_id": "critical-security-regression",
+        "project_files": safe_files,
+        "repaired_code": {"main.js": "const value = 2;\n"},
+        "findings": [{
+            "file": "main.js",
+            "issue": "QUALITY-1",
+            "category": "code_quality",
+            "severity": "low",
+            "tool": "eslint",
+        }],
+        "quality_summary": {"quality_score": 80},
+        "best_repair_candidate": {
+            "files": safe_files,
+            "findings": [{
+                "file": "main.js",
+                "issue": "QUALITY-1",
+                "category": "code_quality",
+                "severity": "low",
+                "tool": "eslint",
+            }],
+            "quality_summary": {"quality_score": 80},
+            "finding_count": 1,
+            "quality_score": 80,
+            "comparison_available": True,
+        },
+        "project_context": {},
+        "tools": ["eslint"],
+        "stage_history": [],
+        "workflow_trace": [],
+        "agent_errors": [],
+    }))
+
+    assert result["repaired_code"] == safe_files
+    assert result["stage_history"][-1]["regression_rollback"] is True
+    assert any("critical or high-severity security" in reason for reason in result["stage_history"][-1]["regression_reasons"])
 
 
 def test_comparison_preserves_same_rule_findings_and_marks_failed_agents_unverified():
@@ -834,6 +960,96 @@ def test_comparison_distinguishes_generic_analyzer_findings_by_diagnostic():
     assert comparison["new_count"] == 1
     assert comparison["resolved_findings"][0]["description"] == "'window' is not defined."
     assert comparison["new_findings"][0]["description"] == "'document' is not defined."
+
+
+def test_comparison_matches_generic_diagnostic_by_symbol_after_line_and_message_change():
+    from app.graph import nodes
+
+    before = {
+        "file": "src/main.js",
+        "line_number": 18,
+        "issue": "LANGUAGE_ANALYZER",
+        "description": "'API_TOKEN' is assigned a value but never used.",
+        "category": "code_quality",
+        "tool": "ESLint",
+    }
+    after = {
+        **before,
+        "line_number": 3,
+        "description": "'API_TOKEN' is declared but its value is never read.",
+    }
+    comparison = nodes.compare_results({
+        "findings": [before],
+        "reanalysis_findings": [after],
+        "stage_history": [
+            {"stage": "analyze", "status": "completed", "agents": {"quality": "completed"}},
+            {"stage": "reanalyze", "status": "completed", "agents": {"quality": "completed"}},
+        ],
+        "project_files": {},
+        "repaired_code": {},
+        "repair_attempts": [],
+        "workflow_trace": [],
+    })["comparison"]
+
+    assert comparison["resolved_count"] == 0
+    assert comparison["unchanged_count"] == 1
+    assert comparison["new_count"] == 0
+
+
+def test_comparison_deduplicates_identical_analyzer_findings_without_losing_distinct_lines():
+    from app.graph import nodes
+
+    finding = {
+        "finding_id": "first-id",
+        "file": "main.js",
+        "line_number": 4,
+        "issue": "LANGUAGE_ANALYZER",
+        "description": "'API_TOKEN' is unused.",
+        "category": "code_quality",
+        "tool": "ESLint",
+    }
+    duplicate = {**finding, "finding_id": "regenerated-id"}
+    comparison = nodes.compare_results({
+        "findings": [finding, duplicate],
+        "reanalysis_findings": [finding, duplicate],
+        "stage_history": [
+            {"stage": "analyze", "status": "completed", "agents": {"quality": "completed"}},
+            {"stage": "reanalyze", "status": "completed", "agents": {"quality": "completed"}},
+        ],
+        "project_files": {},
+        "repaired_code": {},
+        "repair_attempts": [],
+        "workflow_trace": [],
+    })["comparison"]
+
+    assert comparison["findings_before"] == 1
+    assert comparison["findings_after"] == 1
+    assert comparison["unchanged_count"] == 1
+
+
+def test_comparison_reports_unavailable_checks_as_skipped_and_needs_review():
+    from app.graph import nodes
+
+    finding = {"file": "main.go", "issue": "GO001", "category": "code_quality", "tool": "golangci-lint"}
+    result = nodes.compare_results({
+        "findings": [finding],
+        "reanalysis_findings": [finding],
+        "quality_summary": {"tool_runs": [{"tool": "golangci-lint", "status": "unavailable"}]},
+        "reanalysis_summary": {"tool_runs": [{"tool": "golangci-lint", "status": "unavailable"}]},
+        "stage_history": [
+            {"stage": "analyze", "status": "completed", "agents": {"quality": "completed"}},
+            {"stage": "reanalyze", "status": "completed", "agents": {"quality": "completed"}},
+        ],
+        "project_files": {},
+        "repaired_code": {},
+        "repair_attempts": [{"changed_files": ["main.go"]}],
+        "workflow_trace": [],
+    })
+
+    assert result["comparison"]["status"] == "partial"
+    assert result["comparison"]["skipped_checks"] == ["golangci-lint"]
+    assert result["repair_attempts"][-1]["repair_status"] == "needs_review"
+    assert result["repair_attempts"][-1]["verification_status"] == "needs_review"
 
 
 def test_comparison_does_not_merge_distinct_diagnostics_with_the_same_rule():

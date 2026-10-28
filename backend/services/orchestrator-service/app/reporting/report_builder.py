@@ -60,18 +60,17 @@ def _repair_candidate_was_validated(attempts: list[dict]) -> bool:
 def _repair_status(state: dict) -> str:
     attempts = state.get("repair_attempts", [])
     if not attempts:
-        return "not_attempted"
+        return "not_run"
 
     comparison = state.get("comparison") or {}
-    if (
-        comparison.get("status") == "complete"
-        and comparison.get("remaining_original_count") == 0
-        and comparison.get("new_count") == 0
-    ):
-        return "completed"
-
-    if any(attempt.get("changed_files") for attempt in attempts):
+    if comparison.get("status") != "complete":
+        return "needs_review"
+    if not comparison.get("remaining_original_count") and not comparison.get("new_count"):
+        return "success"
+    if comparison.get("resolved_count", 0):
         return "partial"
+    if comparison.get("new_count"):
+        return "needs_review"
     return "failed"
 
 
@@ -118,6 +117,8 @@ def _workflow_status(state: dict) -> str:
     if validation_status == "passed":
         if _unresolved_repair_error(state, _analysis_checks(state)):
             return "AGENT_FAILURE"
+        if state.get("repair_attempts") and comparison.get("status") != "complete":
+            return "REVIEW_REQUIRED"
         if comparison.get("status") == "complete" and (
             comparison.get("remaining_original_count", 0)
             or comparison.get("new_count", 0)
@@ -143,6 +144,17 @@ def _workflow_status(state: dict) -> str:
 
 def _workflow_status_reason(state: dict) -> str:
     validation_status = _effective_validation_status(state)
+    comparison = state.get("comparison") or {}
+    attempts = state.get("repair_attempts", [])
+    rejected_attempt = next(
+        (attempt for attempt in reversed(attempts) if attempt.get("candidate_rejection_reason")),
+        None,
+    )
+    if validation_status in {"failed", "error"} and rejected_attempt:
+        return (
+            "The repair candidate was rejected during final verification: "
+            f"{rejected_attempt['candidate_rejection_reason']}"
+        )
     if validation_status == "passed":
         repair_error = _unresolved_repair_error(state, _analysis_checks(state))
         if repair_error:
@@ -151,6 +163,14 @@ def _workflow_status_reason(state: dict) -> str:
                 "Validation itself passed."
             )
         if _workflow_status(state) == "REVIEW_REQUIRED":
+            if comparison.get("status") != "complete":
+                skipped_checks = comparison.get("skipped_checks", [])
+                if skipped_checks:
+                    return (
+                        "Validation passed, but repair verification is incomplete because these "
+                        f"checks were skipped or unavailable: {', '.join(skipped_checks)}."
+                    )
+                return "Validation passed, but repair could not be fully verified by re-analysis."
             return (
                 "Sandbox and validation passed, but one or more findings remain "
                 "after re-analysis and require review."

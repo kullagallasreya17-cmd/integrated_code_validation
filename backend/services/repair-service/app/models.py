@@ -11,9 +11,18 @@ class Finding(BaseModel):
     line: int | None = None
     rule_id: str | None = None
     type: str = "bug"
+    category: str | None = None
     severity: str = "medium"
     message: str
     recommendation: str | None = None
+    evidence: str | None = None
+    tool: str | None = None
+    subcategory: str | None = None
+
+    @field_validator("file")
+    @classmethod
+    def validate_file(cls, file: str) -> str:
+        return validate_project_path(file)
 
 
 class CodeFile(BaseModel):
@@ -52,12 +61,15 @@ class FileRepair(BaseModel):
     explanation: str
     resolved_finding_ids: list[str] = Field(default_factory=list)
     candidate_code: str | None = None
+    skipped_checks: list[str] = Field(default_factory=list)
 
 
 class RepairResponse(BaseModel):
     status: Literal["completed", "partial", "failed"]
+    repair_status: Literal["success", "partial", "failed", "needs_review", "not_run", "running"]
     outcome: Literal["applied", "partially_applied", "no_change"] = "no_change"
     changed_files: list[str] = Field(default_factory=list)
     repairs: list[FileRepair]
     unresolved_findings: list[Finding]
     validation_status: str
+    skipped_checks: list[str] = Field(default_factory=list)

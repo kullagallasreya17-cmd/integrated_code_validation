@@ -12,7 +12,7 @@ interface AnalysisReportProps {
 }
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
-const TOOLS = ["ruff", "pylint", "radon"];
+const TOOLS = ["ruff", "pylint", "radon", "mypy"];
 const TOOL_CODE_PATTERN = /\b[A-Z][A-Z0-9]{0,16}\d{3,}\b/;
 const PIPELINE = [
   { label: "Understand", keys: ["understand"] },
@@ -92,8 +92,8 @@ function stageKey(value: unknown): string {
 function stageStatusLabel(value: unknown): string {
   if (typeof value !== "string") return "Not reported";
   const status = value.toLowerCase().replace(/[ -]/g, "_");
-  if (status === "completed" || status === "complete" || status === "passed" || status === "pass") return "Completed";
-  if (status === "skipped" || status === "not_required") return "Skipped";
+  if (status === "completed" || status === "complete" || status === "passed" || status === "pass" || status === "success") return "Completed";
+  if (status === "skipped" || status === "not_required" || status === "not_run") return "Skipped";
   if (status === "failed" || status === "error") return "Failed";
   if (status === "blocked") return "Blocked";
   if (status === "needs_review") return "Needs review";
@@ -286,8 +286,14 @@ function buildStageRows(stageHistory: Record<string, unknown>[], reportedRepairS
       status = "Partial";
     } else if (stage.label === "Repair" && reportedRepairStatus === "failed") {
       status = "Failed";
-    } else if (stage.label === "Repair" && reportedRepairStatus === "completed") {
+    } else if (stage.label === "Repair" && ["completed", "success"].includes(reportedRepairStatus ?? "")) {
       status = "Completed";
+    } else if (stage.label === "Repair" && reportedRepairStatus === "needs_review") {
+      status = "Needs review";
+    } else if (stage.label === "Repair" && ["not_attempted", "not_run"].includes(reportedRepairStatus ?? "")) {
+      status = "Skipped";
+    } else if (stage.label === "Repair" && reportedRepairStatus === "running") {
+      status = "Running";
     } else if (
       stage.label === "Repair"
       && matching.some((entry) => stageStatusLabel(entry.status) === "Partial")
@@ -434,9 +440,15 @@ function buildRepairPresentation(
       : safeText(lastAttempt?.outcome) ?? safeText(lastAttempt?.status) ?? "Status not available";
   }
 
-  const failureReason = [...(attempts ?? [])].reverse().map((attempt) => safeText(attempt.error)).find(Boolean)
+  const failureReason = [...(attempts ?? [])].reverse().map((attempt) =>
+    safeText(attempt.candidate_rejection_reason) ?? safeText(attempt.error)
+  ).find(Boolean)
     ?? errorSummary.find((error) => error.agent.toLowerCase().includes("repair"))?.message;
-  const attemptStatus = (safeText(lastAttempt?.outcome) ?? safeText(lastAttempt?.status))?.toLowerCase();
+  const attemptStatus = (
+    safeText(lastAttempt?.repair_status)
+    ?? safeText(lastAttempt?.outcome)
+    ?? safeText(lastAttempt?.status)
+  )?.toLowerCase();
   const attemptCount = attempts?.length ?? 0;
   const earlierChanges = (attempts ?? []).slice(0, -1).some((attempt) =>
     Array.isArray(attempt.changed_files) && attempt.changed_files.length > 0
@@ -446,13 +458,15 @@ function buildRepairPresentation(
     || (earlierChanges && !lastAttemptChanged && ["failed", "error"].includes(attemptStatus ?? ""))
     || reportedRepairStatus === "partial"
     || stageRows.some((stage) => stage.label === "Repair" && stage.status === "Partial");
-  const failed = !partial && (reportedRepairStatus === "failed" || (
+  const failed = !partial && reportedRepairStatus !== "success" && (reportedRepairStatus === "failed" || (
     (Boolean(lastAttempt) && ["failed", "error"].includes(attemptStatus ?? ""))
     || stageRows.some((stage) => stage.label === "Repair" && stage.status === "Failed")
   ));
   if (partial) status = "Partial";
-  else if (reportedRepairStatus === "completed") status = "Completed";
-  else if (reportedRepairStatus === "not_attempted") status = "Not attempted";
+  else if (["completed", "success"].includes(reportedRepairStatus ?? "")) status = "Completed";
+  else if (["not_attempted", "not_run"].includes(reportedRepairStatus ?? "")) status = "Not run";
+  else if (reportedRepairStatus === "needs_review") status = "Needs review";
+  else if (reportedRepairStatus === "running") status = "Running";
   let explanation: string;
   if (partial) {
     const remaining = findings.length;
@@ -460,6 +474,10 @@ function buildRepairPresentation(
     explanation = failureReason
       ? `Repair made partial progress after ${attemptCount} attempts; ${remainingText}. The last attempt stopped: ${failureReason}`
       : `Repair made partial progress after ${attemptCount} attempts; ${remainingText}.`;
+  } else if (reportedRepairStatus === "needs_review") {
+    explanation = failureReason
+      ? `Repair candidate requires review because analyzer verification was incomplete: ${failureReason}`
+      : "Repair candidate requires review because the final analyzer comparison was incomplete.";
   } else if (!failed) {
     explanation = validationExplanation(validationStatus, findings.length, validationReasons, counts);
   } else {

@@ -148,6 +148,21 @@ def test_should_retry_returns_finalize_when_budget_exhausted():
     assert should_retry(state) == "finalize"
 
 
+def test_should_not_retry_an_identical_candidate_fingerprint():
+    state = {
+        "validation_status": "passed",
+        "retry_count": 1,
+        "reanalysis_findings": [{"file": "main.js", "issue": "LANGUAGE_ANALYZER"}],
+        "stage_history": [{"stage": "reanalyze", "status": "completed"}],
+        "repair_attempts": [
+            {"changed_files": ["main.js"], "candidate_fingerprint": "same"},
+            {"changed_files": ["main.js"], "candidate_fingerprint": "same"},
+        ],
+    }
+
+    assert should_retry(state) == "finalize"
+
+
 def test_should_retry_does_not_repeat_unavailable_sandbox():
     state = {
         "validation_status": "failed",
@@ -461,7 +476,8 @@ def test_repair_attempt_records_input_and_candidate_snapshots(monkeypatch):
     assert attempt["input_findings"] == findings
     assert attempt["input_files"] == {"main.py": original}
     assert attempt["candidate_files"] == {"main.py": "print(2)\n"}
-    assert attempt["outcome"] == "failed"
+    assert attempt["outcome"] == "needs_review"
+    assert attempt["repair_status"] == "needs_review"
     assert attempt["error"] == "One finding remains unresolved."
 
 

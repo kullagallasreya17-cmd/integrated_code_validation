@@ -192,7 +192,7 @@ export default function App() {
     if (originalFiles.length === 0) return;
     const previous = lastRunOptions.current;
     if (previous) void handleStart(originalFiles, previous.tools, previous.projectName, activeProjectId ?? undefined, previous.checks, previous.sandboxStdin);
-    else void handleStart(originalFiles, ["ruff", "pylint", "radon"], "Python project", activeProjectId ?? undefined);
+    else void handleStart(originalFiles, ["ruff", "pylint", "radon", "mypy"], "Python project", activeProjectId ?? undefined);
   }, [activeProjectId, handleStart, originalFiles]);
 
   const value = useMemo<WorkspaceState>(
@@ -416,7 +416,7 @@ function PersistedResultsRoute({ runOrProjectId, onRerun }: Readonly<PersistedRe
   } : DEFAULT_ANALYSIS_CHECKS;
   const qualityTools = (asRecord(finalReport.quality_summary).tool_runs as Array<{ tool?: string }> | undefined)
     ?.map((run) => run.tool)
-    .filter((tool): tool is QualityTool => tool === "ruff" || tool === "pylint" || tool === "radon") ?? ["ruff", "pylint", "radon"];
+    .filter((tool): tool is QualityTool => tool === "ruff" || tool === "pylint" || tool === "radon" || tool === "mypy") ?? ["ruff", "pylint", "radon", "mypy"];
 
   return <ResultsPage originalFiles={files} result={hydrated} completedAt={reportData.completed_at} onRerun={() => void onRerun(files, reportData.project_name ?? "Python project", reportData.project_id, qualityTools, activeChecks, typeof finalReport.sandbox_stdin === "string" ? finalReport.sandbox_stdin : "")} />;
 }

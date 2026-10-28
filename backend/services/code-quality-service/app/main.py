@@ -10,6 +10,7 @@ import httpx
 from app.analyzers.ruff_analyzer import run_ruff
 from app.analyzers.pylint_analyzer import run_pylint
 from app.analyzers.radon_analyzer import run_radon
+from app.analyzers.mypy_analyzer import run_mypy
 from app.parsers.result_normalizer import normalize
 from app.schemas.finding import AnalyzeRequest
 from app.config import settings
@@ -37,7 +38,7 @@ def _build_gate_thresholds() -> dict:
 
 
 def _quality_summary(files: dict[str, str], findings: list) -> dict:
-    by_tool = {"ruff": 0, "pylint": 0, "radon": 0}
+    by_tool = {"ruff": 0, "pylint": 0, "radon": 0, "mypy": 0}
     by_severity = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     complex_functions = 0
     style_issues = 0
@@ -203,7 +204,7 @@ def _run_language_analyzer(project_id: str, files: dict[str, str], language: str
     for path in source_paths:
         source_paths_by_name.setdefault(path.rsplit("/", 1)[-1], []).append(path)
     for normalized_line in _language_diagnostic_lines(output):
-        if tool.lower() == "cppcheck" and not re.match(
+        if "cppcheck" in tool.lower() and not re.match(
             r"^.+?:\d+:\d+:\s*(?:error|warning|style|performance|portability|information):",
             normalized_line,
             re.IGNORECASE,
@@ -377,6 +378,7 @@ def analyze(request: AnalyzeRequest):
         "ruff": run_ruff,
         "pylint": run_pylint,
         "radon": run_radon,
+        "mypy": run_mypy,
     }
     for tool in tools:
         started = perf_counter()

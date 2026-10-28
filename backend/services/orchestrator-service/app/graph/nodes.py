@@ -7,6 +7,8 @@ clients — never by importing another team member's code directly.
 """
 import asyncio
 from collections import Counter
+import hashlib
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -82,7 +84,7 @@ async def _collect_analysis_responses(
     quality_tools = tools if language == "python" else None
     if security_enabled:
         agents.append("security")
-        calls.append(security_client.analyze(project_id, source_files(files), context))
+        calls.append(security_client.analyze(project_id, files, context))
     if quality_enabled:
         agents.append("code_quality")
         calls.append(quality_client.analyze(project_id, files, context, quality_tools))
@@ -344,10 +346,12 @@ async def repair(state: WorkflowState) -> dict:
     previous_attempt = previous_attempts[-1] if previous_attempts else {}
     repair_feedback = ""
     previous_error = previous_attempt.get("error") or ""
+    previous_error = previous_error or previous_attempt.get("candidate_rejection_reason") or ""
     regression_reasons = previous_attempt.get("regression_reasons", [])
     if regression_reasons:
         previous_error = "\n".join([previous_error, *regression_reasons]).strip()
-    if previous_error:
+    previous_unresolved = previous_attempt.get("unresolved_findings", [])
+    if previous_error or previous_unresolved or regression_reasons:
         feedback_details = []
         for detail in previous_attempt.get("repair_details", []):
             explanation = detail.get("explanation")
@@ -363,6 +367,11 @@ async def repair(state: WorkflowState) -> dict:
                     f"Rejected candidate for {detail.get('path', 'unknown file')} "
                     f"(do not repeat it):\n{candidate}"
                 )
+        for path, candidate in previous_attempt.get("candidate_files", {}).items():
+            if candidate:
+                feedback_details.append(
+                    f"Candidate for {path} failed verification; correct the diagnostics below:\n{candidate}"
+                )
         unresolved_findings = [
             (
                 f"{finding.get('file', 'unknown file')}:{finding.get('line') or '?'} "
@@ -370,7 +379,7 @@ async def repair(state: WorkflowState) -> dict:
                 f"{finding.get('message') or finding.get('description') or 'Finding remains unresolved.'} "
                 f"Recommendation: {finding.get('recommendation') or 'Apply a minimal targeted fix.'}"
             )
-            for finding in previous_attempt.get("unresolved_findings", [])
+            for finding in previous_unresolved
         ]
         repair_feedback = "\n".join([previous_error, *feedback_details, *unresolved_findings])
 
@@ -407,28 +416,44 @@ async def repair(state: WorkflowState) -> dict:
     repaired = {**project_files, **{f["path"]: f["content"] for f in result.get("repaired_files", [])}}
 
     repair_error = result.get("error")
-    repair_status = result.get("status", "candidate")
+    repair_status = result.get(
+        "repair_status",
+        {"completed": "needs_review", "partial": "needs_review", "failed": "failed"}.get(
+            result.get("status"), "needs_review"
+        ),
+    )
     agent_errors = [*state.get("agent_errors", [])]
-    if repair_error:
+    if repair_error and repair_status not in {"needs_review", "not_run"}:
         agent_errors.append({"agent": "repair", "error": repair_error})
     repaired_files = repaired or project_files
     changed_files = [
         path for path in files
         if repaired_files.get(path) != project_files.get(path)
     ]
-    if repair_error or repair_status == "failed":
+    if repair_status == "failed":
         repair_stage_status = "failed"
     elif repair_status == "partial":
         repair_stage_status = "partial"
+    elif repair_status == "needs_review":
+        repair_stage_status = "needs_review"
+    elif repair_status == "not_run":
+        repair_stage_status = "not_run"
     else:
         repair_stage_status = "completed"
+    candidate_fingerprint = hashlib.sha256(
+        json.dumps(repaired_files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     attempt_record = {
         "iteration": attempt,
         "mode": result.get("mode", "targeted"),
         "service_status": result.get("status", "unknown"),
+        "repair_status": repair_status,
         "input_findings": input_findings,
         "input_files": {path: files[path] for path in changed_files},
         "candidate_files": {path: repaired_files[path] for path in changed_files},
+        "candidate_fingerprint": candidate_fingerprint,
+        "verification_status": result.get("repair_status", "needs_review"),
+        "skipped_checks": result.get("skipped_checks", []),
         "rejected_candidates": [
             {"path": detail.get("path"), "code": detail.get("candidate_code")}
             for detail in result.get("repair_details", [])
@@ -436,7 +461,7 @@ async def repair(state: WorkflowState) -> dict:
             and detail.get("explanation", "").startswith("Repair rejected:")
         ],
         "changed_files": changed_files,
-        "outcome": "failed" if repair_error or repair_status == "failed" else repair_status,
+        "outcome": repair_status,
         "unresolved_findings": result.get("unresolved_findings", []),
         "repair_details": result.get("repair_details", []),
         "error": repair_error,
@@ -487,7 +512,15 @@ def _validation_findings_detail(validation_result: dict) -> str:
     return finding.get("description") or finding.get("issue") or "Validation checks reported blocking findings."
 
 
-def _mark_repair_attempts(attempts: list[dict], validation_status: str) -> list[dict]:
+def _mark_repair_attempts(
+    attempts: list[dict],
+    validation_status: str,
+    files: dict[str, str],
+    reanalysis_findings: list[dict],
+    quality_summary: dict,
+    sandbox_result: dict,
+    validation_results: dict,
+) -> list[dict]:
     if not attempts or attempts[-1].get("outcome") in {"failed", "error"}:
         return attempts
     outcome = "validated"
@@ -495,7 +528,18 @@ def _mark_repair_attempts(attempts: list[dict], validation_status: str) -> list[
         outcome = "needs_review"
     elif validation_status != "passed":
         outcome = "validation_failed"
-    attempts[-1] = {**attempts[-1], "outcome": outcome, "validation_status": validation_status}
+    attempts[-1] = {
+        **attempts[-1],
+        "outcome": outcome,
+        "validation_status": validation_status,
+        **({
+            "verified_files": files,
+            "verified_findings": reanalysis_findings,
+            "verified_quality_summary": quality_summary,
+            "verified_sandbox_result": sandbox_result,
+            "verified_validation_results": validation_results,
+        } if validation_status == "passed" else {}),
+    }
     return attempts
 
 
@@ -506,47 +550,44 @@ async def validate(state: WorkflowState) -> dict:
     workflow_id = state.get("run_id") or state.get("analysis_id") or project_id
     source_paths = source_files(files)
     language = detect_language(list(source_paths))
+    sandbox_result = None
+    if language == "python":
+        try:
+            sandbox_stdin = (state.get("project_context") or {}).get("sandbox_stdin", "")
+            logger.info(
+                "workflow_endpoint_call run_id=%s node=validate endpoint=sandbox:/execute language=%s file_count=%s",
+                workflow_id,
+                language,
+                len(source_paths),
+                extra={"workflow_run_id": workflow_id, "service_endpoint": "sandbox:/execute"},
+            )
+            sandbox_result = await sandbox_client.execute(project_id, files, sandbox_stdin)
+        except Exception as exc:  # noqa: BLE001 - preserve the sandbox failure in the report
+            logger.exception(
+                "workflow_endpoint_exception run_id=%s node=validate endpoint=sandbox:/execute",
+                workflow_id,
+                extra={"workflow_run_id": workflow_id, "service_endpoint": "sandbox:/execute"},
+            )
+            sandbox_result = {"status": "unavailable", "executed": False, "passed": False, "error": f"sandbox failed: {exc}"}
     try:
-        sandbox_stdin = (state.get("project_context") or {}).get("sandbox_stdin", "")
+        validation_arguments = (project_id, files, state.get("findings", []))
         logger.info(
-            "workflow_endpoint_call run_id=%s node=validate endpoint=sandbox:/execute language=%s file_count=%s",
+            "workflow_endpoint_call run_id=%s node=validate endpoint=validation:/validate language=%s file_count=%s",
             workflow_id,
             language or "unknown",
             len(source_paths),
-            extra={"workflow_run_id": workflow_id, "service_endpoint": "sandbox:/execute"},
+            extra={"workflow_run_id": workflow_id, "service_endpoint": "validation:/validate"},
         )
-        sandbox_result = await (
-            sandbox_client.execute(project_id, files, sandbox_stdin)
-            if language == "python"
-            else sandbox_client.execute(
-                project_id, files, sandbox_stdin, validation_only=True
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - preserve the sandbox failure in the report
-        logger.exception(
-            "workflow_endpoint_exception run_id=%s node=validate endpoint=sandbox:/execute",
-            workflow_id,
-            extra={"workflow_run_id": workflow_id, "service_endpoint": "sandbox:/execute"},
-        )
-        sandbox_result = {"status": "unavailable", "executed": False, "passed": False, "error": f"sandbox failed: {exc}"}
-    try:
-        validation_arguments = (project_id, files, state.get("findings", []))
-        if language == "python":
-            logger.info(
-                "workflow_endpoint_call run_id=%s node=validate endpoint=validation:/validate language=python file_count=%s",
-                workflow_id,
-                len(source_paths),
-                extra={"workflow_run_id": workflow_id, "service_endpoint": "validation:/validate"},
-            )
-            validation_result = await validation_client.validate(*validation_arguments)
-        else:
-            logger.info(
-                "workflow_validation_mode run_id=%s language=%s validator=sandbox",
-                workflow_id,
-                language or "unknown",
-                extra={"workflow_run_id": workflow_id, "validation_mode": "sandbox"},
-            )
-            validation_result = await validation_client.validate(*validation_arguments, sandbox_result)
+        validation_result = await validation_client.validate(*validation_arguments)
+        if language != "python":
+            sandbox_result = validation_result.pop("sandbox_result", None)
+            if not isinstance(sandbox_result, dict):
+                sandbox_result = {
+                    "status": "unavailable",
+                    "executed": False,
+                    "passed": False,
+                    "error": validation_result.get("error") or "Validation service did not return sandbox execution details.",
+                }
     except Exception as exc:  # noqa: BLE001 - preserve the validation failure in the report
         logger.exception(
             "workflow_endpoint_exception run_id=%s node=validate endpoint=validation:/validate",
@@ -554,7 +595,16 @@ async def validate(state: WorkflowState) -> dict:
             extra={"workflow_run_id": workflow_id, "service_endpoint": "validation:/validate"},
         )
         validation_result = {"passed": False, "status": "error", "error": f"validation failed: {exc}"}
+        if sandbox_result is None:
+            sandbox_result = {
+                "status": "unavailable",
+                "executed": False,
+                "passed": False,
+                "error": f"validation failed: {exc}",
+            }
 
+    if sandbox_result is None:
+        sandbox_result = {"status": "unavailable", "executed": False, "passed": False}
     validation_status = _validation_outcome(sandbox_result, validation_result)
     logger.info(
         "workflow_validation_result run_id=%s status=%s sandbox_status=%s sandbox_exit_code=%s validator_status=%s validator_passed=%s",
@@ -594,10 +644,81 @@ async def validate(state: WorkflowState) -> dict:
     elif validation_status == "failed":
         _record_validation_error(agent_errors, "validation", _validation_findings_detail(validation_results))
 
-    repair_attempts = _mark_repair_attempts(list(state.get("repair_attempts", [])), validation_status)
+    repair_attempts = list(state.get("repair_attempts", []))
+    selected_files = files
+    selected_sandbox = sandbox_result
+    selected_validation = validation_results
+    selected_findings = state.get("reanalysis_findings", [])
+    selected_summary = state.get("reanalysis_summary", {})
+    selected_best_candidate = state.get("best_repair_candidate")
+    rollback_reason = None
+    if validation_status != "passed" and repair_attempts:
+        sandbox_diagnostic = (
+            sandbox_result.get("error")
+            or sandbox_result.get("stderr")
+            or sandbox_result.get("stdout")
+        )
+        rollback_reason = (
+            validation_results.get("error")
+            or sandbox_diagnostic
+            or _validation_findings_detail(validation_results)
+        )
+        previous_verified = next(
+            (
+                attempt for attempt in reversed(repair_attempts[:-1])
+                if attempt.get("validation_status") == "passed"
+                and isinstance(attempt.get("verified_files"), dict)
+            ),
+            None,
+        )
+        if previous_verified:
+            selected_files = previous_verified["verified_files"]
+            selected_findings = previous_verified.get("verified_findings", state.get("findings", []))
+            selected_summary = previous_verified.get("verified_quality_summary", state.get("quality_summary", {}))
+            selected_sandbox = previous_verified.get("verified_sandbox_result", sandbox_result)
+            selected_validation = previous_verified.get("verified_validation_results", validation_results)
+            validation_status = "passed"
+        else:
+            selected_files = state.get("project_files", {})
+            selected_findings = state.get("findings", [])
+            selected_summary = state.get("quality_summary", {})
+        selected_best_candidate = {
+            "files": selected_files,
+            "findings": selected_findings,
+            "quality_summary": selected_summary,
+            "finding_count": len(selected_findings),
+            "quality_score": _quality_score(selected_summary),
+            "comparison_available": True,
+        }
+        repair_attempts[-1] = {
+            **repair_attempts[-1],
+            "candidate_rejected": True,
+            "candidate_rejection_reason": rollback_reason,
+            "candidate_rollback": True,
+        }
+    repair_attempts = _mark_repair_attempts(
+        repair_attempts,
+        validation_status,
+        selected_files,
+        selected_findings,
+        selected_summary,
+        selected_sandbox,
+        selected_validation,
+    )
+    if rollback_reason and repair_attempts:
+        repair_attempts[-1] = {
+            **repair_attempts[-1],
+            "candidate_rejected": True,
+            "candidate_rejection_reason": rollback_reason,
+            "candidate_rollback": True,
+        }
     return {
-        "sandbox_result": sandbox_result,
-        "validation_results": validation_results,
+        "repaired_code": selected_files,
+        "reanalysis_findings": selected_findings,
+        "reanalysis_summary": selected_summary,
+        "best_repair_candidate": selected_best_candidate,
+        "sandbox_result": selected_sandbox,
+        "validation_results": selected_validation,
         "validation_status": validation_status,
         "repair_attempts": repair_attempts,
         "agent_errors": agent_errors,
@@ -654,11 +775,34 @@ async def reanalyze(state: WorkflowState) -> dict:
 
     candidate_score = _quality_score(quality_summary)
     regression_reasons = []
-    analysis_available = bool(any(flags)) and not reanalysis_errors
+    skipped_quality_tools = _skipped_quality_tools(
+        quality_summary,
+        state.get("tools") or quality_summary.get("selected_tools"),
+    )
+    analysis_available = bool(any(flags)) and not reanalysis_errors and not skipped_quality_tools
     if analysis_available and best_candidate.get("comparison_available", True):
         if len(findings) > best_candidate["finding_count"]:
             regression_reasons.append(
                 f"Candidate increased findings from {best_candidate['finding_count']} to {len(findings)}."
+            )
+        previous_serious_security = Counter(
+            _finding_base_identity(finding)
+            for finding in best_candidate.get("findings", [])
+            if str(finding.get("category", "")).lower() == "security"
+            and str(finding.get("severity", "")).lower() in {"critical", "high"}
+        )
+        current_serious_security = Counter(
+            _finding_base_identity(finding)
+            for finding in findings
+            if str(finding.get("category", "")).lower() == "security"
+            and str(finding.get("severity", "")).lower() in {"critical", "high"}
+        )
+        if any(
+            count > previous_serious_security[identity]
+            for identity, count in current_serious_security.items()
+        ):
+            regression_reasons.append(
+                "Candidate introduced a new critical or high-severity security finding."
             )
         best_score = best_candidate.get("quality_score")
         if (
@@ -672,6 +816,12 @@ async def reanalyze(state: WorkflowState) -> dict:
     elif reanalysis_errors:
         regression_reasons.append(
             "Candidate was not promoted because re-analysis did not complete successfully."
+        )
+    elif skipped_quality_tools:
+        regression_reasons.append(
+            "Candidate was not promoted because selected analyzers were unavailable: "
+            + ", ".join(sorted(skipped_quality_tools))
+            + "."
         )
 
     regression_rollback = bool(regression_reasons)
@@ -699,8 +849,15 @@ async def reanalyze(state: WorkflowState) -> dict:
             **repair_attempts[-1],
             "regression_rollback": regression_rollback,
             "regression_reasons": regression_reasons,
+            "candidate_rejected": regression_rollback,
+            "candidate_rollback": regression_rollback,
+            **({
+                "candidate_rejection_reason": "; ".join(regression_reasons)
+            } if regression_rollback else {}),
             "candidate_findings_after": len(findings),
             "candidate_quality_score": candidate_score,
+            "candidate_findings": findings,
+            "candidate_quality_summary": quality_summary,
         }
     agent_statuses = _analysis_agent_statuses(*flags, reanalysis_errors)
     reanalysis_status = (
@@ -736,6 +893,17 @@ def _quality_score(summary: dict) -> int | float | None:
     return None
 
 
+def _skipped_quality_tools(summary: dict, selected_tools: list[str] | None = None) -> set[str]:
+    selected = {str(tool).lower() for tool in selected_tools or []}
+    return {
+        str(run.get("tool") or "unknown analyzer")
+        for run in summary.get("tool_runs", [])
+        if isinstance(run, dict)
+        and run.get("status") in {"skipped", "not_run", "unavailable", "unsupported"}
+        and (not selected or str(run.get("tool") or "").lower() in selected)
+    }
+
+
 def _finding_agent(finding: dict) -> str:
     category = str(finding.get("category", "")).lower()
     tool = str(finding.get("tool", "")).lower()
@@ -752,6 +920,27 @@ def _finding_identity(finding: dict) -> tuple:
     ))
 
 
+def _finding_symbol(finding: dict) -> str | None:
+    message = str(finding.get("description") or finding.get("message") or "")
+    match = re.search(r"""['"`‘’“”]([A-Za-z_$][\w$]*)['"`‘’“”]""", message)
+    return match.group(1).lower() if match else None
+
+
+def _dedupe_findings(findings: list[dict]) -> list[dict]:
+    unique = []
+    seen = set()
+    for finding in findings:
+        key = (
+            *_finding_identity(finding),
+            finding.get("line_number", finding.get("line")),
+            " ".join(str(finding.get("evidence") or "").strip().lower().split()),
+        )
+        if key not in seen:
+            unique.append(finding)
+            seen.add(key)
+    return unique
+
+
 def _finding_base_identity(finding: dict) -> tuple:
     issue = str(finding.get("issue") or "").strip().lower()
     evidence = str(finding.get("evidence") or "").strip()
@@ -759,25 +948,28 @@ def _finding_base_identity(finding: dict) -> tuple:
     if not rule:
         rule = re.search(r"\b[A-Z]\d{3,5}\b", evidence)
     identity = rule.group(0).lower() if rule else issue
+    symbol = _finding_symbol(finding)
     if issue in {"language_analyzer", "language_analyzer_failed"}:
         identity = (
             issue,
-            " ".join(
+            symbol or " ".join(
                 str(finding.get("description") or finding.get("message") or "").strip().lower().split()
             ),
         )
+    elif symbol:
+        identity = (identity, "symbol", symbol)
     return (
         str(finding.get("category") or "").lower(),
         str(finding.get("tool") or "").lower(),
-        str(finding.get("file") or "").replace("\\", "/"),
+        str(finding.get("file") or "").replace("\\", "/").lower(),
         identity,
     )
 
 
 def compare_results(state: WorkflowState) -> dict:
     """Compare findings without collapsing repeated rules or masking failed agents."""
-    before = state.get("findings", [])
-    after = state.get("reanalysis_findings", [])
+    before = _dedupe_findings(state.get("findings", []))
+    after = _dedupe_findings(state.get("reanalysis_findings", []))
     reanalysis_stage = next(
         (stage for stage in reversed(state.get("stage_history", [])) if stage.get("stage") == "reanalyze"),
         {},
@@ -790,12 +982,32 @@ def compare_results(state: WorkflowState) -> dict:
         agent
         for stage in (analysis_stage, reanalysis_stage)
         for agent, status in stage.get("agents", {}).items()
-        if status in {"failed", "blocked"}
+        if status in {"failed", "blocked", "unavailable", "unsupported"}
     }
+    skipped_agents = {
+        agent
+        for stage in (analysis_stage, reanalysis_stage)
+        for agent, status in stage.get("agents", {}).items()
+        if status in {"skipped", "not_run"}
+    }
+    skipped_tools = set()
+    for summary in (state.get("quality_summary") or {}, state.get("reanalysis_summary") or {}):
+        skipped_tools.update(_skipped_quality_tools(
+            summary,
+            state.get("tools") or summary.get("selected_tools"),
+        ))
+    skipped_tools.update(
+        str(check)
+        for attempt in state.get("repair_attempts", [])
+        for check in attempt.get("skipped_checks", [])
+    )
     unverified_before = [finding for finding in before if _finding_agent(finding) in failed_agents]
     unverified_after = [finding for finding in after if _finding_agent(finding) in failed_agents]
-    comparable_before = [finding for finding in before if _finding_agent(finding) not in failed_agents]
-    comparable_after = [finding for finding in after if _finding_agent(finding) not in failed_agents]
+    skipped_before = [finding for finding in before if _finding_agent(finding) in skipped_agents]
+    skipped_after = [finding for finding in after if _finding_agent(finding) in skipped_agents]
+    unavailable_agents = failed_agents | skipped_agents
+    comparable_before = [finding for finding in before if _finding_agent(finding) not in unavailable_agents]
+    comparable_after = [finding for finding in after if _finding_agent(finding) not in unavailable_agents]
 
     exact_after: dict[tuple, list[int]] = {}
     base_before: dict[tuple, list[int]] = {}
@@ -842,6 +1054,9 @@ def compare_results(state: WorkflowState) -> dict:
     ]
     comparison_complete = (
         not failed_agents
+        and not skipped_before
+        and not skipped_after
+        and not skipped_tools
         and analysis_stage.get("status") == "completed"
         and reanalysis_stage.get("status") == "completed"
     )
@@ -850,6 +1065,8 @@ def compare_results(state: WorkflowState) -> dict:
         else "not_run" if reanalysis_stage.get("status") == "skipped"
         else "partial"
     )
+    unverified_findings = unverified_after or unverified_before
+    skipped_findings = skipped_after or skipped_before
     changed_files = [
         path for path, content in (state.get("repaired_code") or {}).items()
         if content != state.get("project_files", {}).get(path)
@@ -861,20 +1078,32 @@ def compare_results(state: WorkflowState) -> dict:
         "resolved_count": len(resolved),
         "unchanged_count": len(unchanged),
         "new_count": len(introduced),
-        "unverified_count": len(unverified_before) + len(unverified_after),
-        "remaining_original_count": len(unchanged) + len(unverified_before),
+        "unverified_count": max(len(unverified_before), len(unverified_after)),
+        "skipped_checks": sorted([
+            *(
+                agent for agent in skipped_agents
+                if any(_finding_agent(finding) == agent for finding in [*before, *after])
+            ),
+            *skipped_tools,
+        ]),
+        "skipped_findings": skipped_findings,
+        "remaining_original_count": len(unchanged) + len(unverified_before) + len(skipped_before),
         "unverified_before_count": len(unverified_before),
         "unverified_after_count": len(unverified_after),
         "resolved_findings": resolved,
         "unchanged_findings": unchanged,
         "new_findings": introduced,
         "unverified_findings": [*unverified_before, *unverified_after],
-        "remaining_findings": [*unchanged, *introduced, *unverified_before, *unverified_after],
+        "remaining_findings": [*unchanged, *introduced, *unverified_findings, *skipped_findings],
         "resolved_issues": sorted({finding.get("issue", "Unknown issue") for finding in resolved}),
         "remaining_issues": sorted({
             finding.get("issue", "Unknown issue")
-            for finding in [*unchanged, *introduced, *unverified_before, *unverified_after]
+        for finding in [*unchanged, *introduced, *unverified_findings, *skipped_findings]
         }),
+        "unverified_before_findings": unverified_before,
+        "unverified_after_findings": unverified_after,
+        "skipped_before_findings": skipped_before,
+        "skipped_after_findings": skipped_after,
         "changed_files": changed_files,
         "improved": comparison_complete and len(after) < len(before),
     }
@@ -887,18 +1116,43 @@ def compare_results(state: WorkflowState) -> dict:
     if comparison_complete and after_score is not None:
         comparison["quality_score_after"] = after_score
     final_outcome = "improved" if comparison["improved"] else "needs_review"
+    attempts = list(state.get("repair_attempts", []))
+    if attempts:
+        if not comparison_complete:
+            final_status = "needs_review"
+        elif not unchanged and not introduced:
+            final_status = "success"
+        elif resolved:
+            final_status = "partial"
+        elif attempts[-1].get("candidate_rollback"):
+            final_status = "failed"
+        elif not attempts[-1].get("changed_files"):
+            final_status = "failed"
+        else:
+            final_status = "needs_review"
+        attempts[-1] = {
+            **attempts[-1],
+            "repair_status": final_status,
+            "verification_status": "verified" if comparison_complete else "needs_review",
+            "verified_resolved_findings": resolved,
+            "remaining_findings": [*unchanged, *unverified_before, *skipped_before],
+            "introduced_findings": introduced,
+            "unverified_findings": unverified_findings,
+            "skipped_findings": skipped_findings,
+            "skipped_checks": comparison["skipped_checks"],
+        }
     return {
         "comparison": comparison,
         "repair_attempts": [
-            *state.get("repair_attempts", [])[:-1],
+            *attempts[:-1],
             {
-                **state.get("repair_attempts", [])[-1],
+                **attempts[-1],
                 "findings_before": len(before),
                 "findings_after": len(after) if comparison_complete else None,
                 "quality_improved": comparison["improved"],
                 "final_outcome": final_outcome,
             },
-        ] if state.get("repair_attempts") else [],
+        ] if attempts else [],
         "workflow_trace": [*state.get("workflow_trace", []), "Before and after results compared"],
         "stage_history": [*state.get("stage_history", []), {
             "stage": "compare", "status": "completed", "improved": comparison["improved"]
@@ -940,6 +1194,12 @@ def should_retry(state: WorkflowState) -> str:
         return "finalize"
     repair_attempts = state.get("repair_attempts", [])
     last_attempt = repair_attempts[-1] if repair_attempts else {}
+    last_fingerprint = last_attempt.get("candidate_fingerprint")
+    if last_fingerprint and any(
+        attempt.get("candidate_fingerprint") == last_fingerprint
+        for attempt in repair_attempts[:-1]
+    ):
+        return "finalize"
     if validation_status in {"passed", "needs_review"}:
         reanalysis_stage = next(
             (stage for stage in reversed(state.get("stage_history", [])) if stage.get("stage") == "reanalyze"),

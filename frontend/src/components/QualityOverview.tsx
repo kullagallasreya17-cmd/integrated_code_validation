@@ -20,7 +20,7 @@ export function QualityOverview({ summary, findings }: Readonly<QualityOverviewP
   const gateStatus = summary?.quality_gate_status ?? summary?.quality_gate?.status;
   const gatePassed = gateStatus === "PASS";
   const complexityPassed = summary ? summary.complex_functions <= (summary.quality_gate?.thresholds.complexity_limit ?? 3) : true;
-  const tools = ["ruff", "pylint", "radon"];
+  const tools = ["ruff", "pylint", "radon", "mypy"];
 
   return (
     <section className="quality-overview">
